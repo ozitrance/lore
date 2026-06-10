@@ -46,7 +46,7 @@
 
 ## About Lore
 
-Maintained by Epic Games, Lore is an open source version control system designed for unprecedented scalability of both data and teams. It's optimized for projects that combine code with large binary assets, including games and entertainment, and caters for the needs of developers and artists alike.
+Lore is an open source version control system designed for unprecedented scalability of both data and teams. It is optimized for projects that combine code with large binary assets, including games and entertainment, and caters for the needs of developers and artists alike.
 
 <sub><a href="#readme-top">(back to top)</a></sub>
 
