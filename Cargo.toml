@@ -10,6 +10,7 @@ members = [
     "lore-error-set",
     "lore-error-set-macro",
     "lore-hashicorp",
+    "lore-integration-tests",
     "lore-macro",
     "lore-notification",
     "lore-proto",

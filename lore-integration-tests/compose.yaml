@@ -1,0 +1,41 @@
+# Note: anything you rely on for running integration tests
+# should also have a non-docker equivalent in scripts/actions/test-integration.sh
+name: integration-tests
+
+services:
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=lorelocal
+      - MINIO_ROOT_PASSWORD=lorelocal
+    command: server --console-address :9001 /data
+  dynamodb:
+    image: amazon/dynamodb-local
+    ports:
+      - "9090:9090"
+    init: true
+    restart: on-failure
+    environment:
+      - AWS_ACCESS_KEY_ID=lorelocal
+      - AWS_SECRET_ACCESS_KEY=lorelocal
+      - AWS_REGION=us-east-1
+    command: "-jar DynamoDBLocal.jar -port 9090 -inMemory -sharedDb"
+  consul-server:
+    image: hashicorp/consul:latest
+    container_name: consul-server
+    ports:
+      - "8500:8500"
+    volumes:
+      - ./consul-data:/consul/data
+    command: agent -server -bootstrap-expect=1 -data-dir=/consul/server/data -node=consul-server-1 -client=0.0.0.0 -ui
+  consul-node-1:
+    depends_on:
+      - consul-server
+    image: hashicorp/consul:latest
+    container_name: consul-node-1
+    volumes:
+      - ./consul-data:/consul/data
+    command: agent -data-dir=/consul/node-1/data -node=consul-node-1 -retry-join=consul-server

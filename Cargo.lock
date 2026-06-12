@@ -2640,6 +2640,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "lore-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-sdk-dynamodb",
+ "aws-sdk-s3",
+ "axum",
+ "bytes",
+ "lore",
+ "lore-aws",
+ "lore-base",
+ "lore-hashicorp",
+ "lore-proto",
+ "lore-revision",
+ "lore-server",
+ "lore-storage",
+ "rand",
+ "reqwest",
+ "ring",
+ "rs-consul",
+ "rustls",
+ "serde_dynamo",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zerocopy",
+]
+
+[[package]]
 name = "lore-macro"
 version = "0.8.3-nightly"
 dependencies = [
