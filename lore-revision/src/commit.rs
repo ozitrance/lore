@@ -371,6 +371,8 @@ pub async fn commit_impl(
         return Err(NothingStaged.into());
     }
 
+    lore_debug!("Commit staged revision: {staged_revision}");
+
     // Early check: has another instance advanced the branch latest pointer?
     // This is placed before expensive commit work (fragmenting, rehashing) so
     // the user gets a fast failure. The mutable store filesystem lock ensures
@@ -420,6 +422,8 @@ pub async fn commit_impl(
     )
     .await
     .forward::<CommitError>("Failed collecting dirty paths from staged state")?;
+
+    lore_debug!("Collected {} dirty paths", dirty_paths.len());
 
     // Capture the merge parents now — `finalize_commit` will overwrite
     // `parent_self` with the new commit signature, which would prevent us
@@ -2987,6 +2991,13 @@ pub(crate) async fn prune_dirty_for_commit(
 /// node from its parent's child chain. Post-order is required so empty
 /// intermediate directories can collapse upward after their dirty-add
 /// children have already been removed.
+///
+/// Only dirty children are descended into: `node_mark_dirty` propagates the
+/// base Dirty bit up to the root, so a clean child cannot have dirty
+/// descendants (the same invariant `collect_dirty_paths` walks by). Clean
+/// subtrees are untouched — in particular a clean committed empty directory
+/// is no longer visited, so the empty-directory collapse below only applies
+/// to directories on dirty paths.
 fn prune_dirty_recurse(
     state: Arc<State>,
     repository: Arc<RepositoryContext>,
@@ -3013,9 +3024,14 @@ fn prune_dirty_recurse(
                     .block(repository.clone(), NodeBlock::index(child_id))
                     .await
                     .forward::<CommitError>("Failed deserializing state block")?;
-                let next_sibling = child_block.node(Node::index(child_id)).sibling;
+                let (next_sibling, child_is_dirty) = {
+                    let child = child_block.node(Node::index(child_id));
+                    (child.sibling, child.is_dirty())
+                };
 
-                if prune_dirty_recurse(state.clone(), repository.clone(), child_id).await? {
+                if child_is_dirty
+                    && prune_dirty_recurse(state.clone(), repository.clone(), child_id).await?
+                {
                     to_discard.push(child_id);
                 }
 
