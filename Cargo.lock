@@ -2930,6 +2930,7 @@ dependencies = [
  "quinn-proto",
  "rand",
  "rcgen",
+ "reqwest",
  "rustls",
  "rustls-native-certs",
  "serde",

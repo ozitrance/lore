@@ -83,6 +83,59 @@ impl ::prost::Name for QueryResponse {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PresignDownloadRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub addresses: ::prost::alloc::vec::Vec<crate::lore::model::v1::Address>,
+    #[prost(uint64, tag = "2")]
+    pub expires_in_seconds: u64,
+}
+impl ::prost::Name for PresignDownloadRequest {
+    const NAME: &'static str = "PresignDownloadRequest";
+    const PACKAGE: &'static str = "lore.storage.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "lore.storage.v1.PresignDownloadRequest".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/lore.storage.v1.PresignDownloadRequest".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PresignedDownload {
+    #[prost(message, optional, tag = "1")]
+    pub address: ::core::option::Option<crate::lore::model::v1::Address>,
+    #[prost(message, optional, tag = "2")]
+    pub fragment: ::core::option::Option<crate::lore::model::v1::Fragment>,
+    #[prost(string, tag = "3")]
+    pub url: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub expires_at_epoch_seconds: u64,
+}
+impl ::prost::Name for PresignedDownload {
+    const NAME: &'static str = "PresignedDownload";
+    const PACKAGE: &'static str = "lore.storage.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "lore.storage.v1.PresignedDownload".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/lore.storage.v1.PresignedDownload".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PresignDownloadResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub downloads: ::prost::alloc::vec::Vec<PresignedDownload>,
+}
+impl ::prost::Name for PresignDownloadResponse {
+    const NAME: &'static str = "PresignDownloadResponse";
+    const PACKAGE: &'static str = "lore.storage.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "lore.storage.v1.PresignDownloadResponse".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/lore.storage.v1.PresignDownloadResponse".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VerifyRequest {
     #[prost(message, optional, tag = "1")]
     pub address: ::core::option::Option<crate::lore::model::v1::Address>,
@@ -476,6 +529,32 @@ pub mod storage_service_client {
                 .insert(GrpcMethod::new("lore.storage.v1.StorageService", "Query"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn presign_download(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PresignDownloadRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PresignDownloadResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/lore.storage.v1.StorageService/PresignDownload",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("lore.storage.v1.StorageService", "PresignDownload"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn verify(
             &mut self,
             request: impl tonic::IntoRequest<super::VerifyRequest>,
@@ -657,6 +736,13 @@ pub mod storage_service_server {
             &self,
             request: tonic::Request<super::QueryRequest>,
         ) -> std::result::Result<tonic::Response<super::QueryResponse>, tonic::Status>;
+        async fn presign_download(
+            &self,
+            request: tonic::Request<super::PresignDownloadRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PresignDownloadResponse>,
+            tonic::Status,
+        >;
         async fn verify(
             &self,
             request: tonic::Request<super::VerifyRequest>,
@@ -939,6 +1025,52 @@ pub mod storage_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = QuerySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/lore.storage.v1.StorageService/PresignDownload" => {
+                    #[allow(non_camel_case_types)]
+                    struct PresignDownloadSvc<T: StorageService>(pub Arc<T>);
+                    impl<
+                        T: StorageService,
+                    > tonic::server::UnaryService<super::PresignDownloadRequest>
+                    for PresignDownloadSvc<T> {
+                        type Response = super::PresignDownloadResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::PresignDownloadRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as StorageService>::presign_download(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = PresignDownloadSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

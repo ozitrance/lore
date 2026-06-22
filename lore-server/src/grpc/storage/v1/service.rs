@@ -15,6 +15,7 @@ use super::get_metadata;
 use super::mutable_compare_and_swap;
 use super::mutable_load;
 use super::mutable_store;
+use super::presign_download;
 use super::put;
 use super::put::PutResponseStream;
 use super::query;
@@ -55,6 +56,13 @@ impl StorageServiceV1 for LoreStorageService {
         request: Request<storage_v1::QueryRequest>,
     ) -> Result<Response<storage_v1::QueryResponse>, Status> {
         query::handler(request, self.immutable_store().clone()).await
+    }
+
+    async fn presign_download(
+        &self,
+        request: Request<storage_v1::PresignDownloadRequest>,
+    ) -> Result<Response<storage_v1::PresignDownloadResponse>, Status> {
+        presign_download::handler(request, self.immutable_store().clone()).await
     }
 
     type CopyStream = CopyResponseStream;

@@ -82,6 +82,7 @@ pub use hash::hash_function_strs_slice;
 pub use hash::hash_slice;
 pub use hash::hash_string;
 pub use hash::hash_string_bytes;
+pub use lore_base::types::DirectDownload;
 // Re-export store traits
 pub use immutable_store::ImmutableStore;
 pub use immutable_store::StoreError;
