@@ -120,6 +120,16 @@ typedef enum lore_error_code_t {
   LORE_ERROR_CODE_SLOW_DOWN = 4,
 } lore_error_code_t;
 
+// Strategy used for a path during branch merge.
+typedef enum lore_path_merge_strategy_t {
+  // Merge the path normally.
+  LORE_PATH_MERGE_STRATEGY_MERGE = 0,
+  // Keep the current target branch version for matching source changes.
+  LORE_PATH_MERGE_STRATEGY_KEEP_TARGET = 1,
+  // Exclude matching source changes from the merge.
+  LORE_PATH_MERGE_STRATEGY_EXCLUDE = 2,
+} lore_path_merge_strategy_t;
+
 // The kind of value held by a metadata entry.
 typedef enum lore_metadata_type_t {
   // A block of raw bytes.
@@ -3508,6 +3518,23 @@ typedef struct lore_branch_merge_restart_args_t {
   struct lore_string_array_t paths;
 } lore_branch_merge_restart_args_t;
 
+// A repository-relative path merge strategy rule.
+typedef struct lore_path_merge_rule_t {
+  // Repository-relative path. Directories match descendants.
+  struct lore_string_t path;
+  // Strategy to apply when this rule is the most-specific match.
+  enum lore_path_merge_strategy_t strategy;
+} lore_path_merge_rule_t;
+
+// A contiguous array of elements described by a pointer and a count.
+// Holds zero or more values of the element type laid out one after another.
+typedef struct lore_path_merge_rule_array_t {
+  // Pointer to the first element.
+  const struct lore_path_merge_rule_t *ptr;
+  // Number of elements in the array.
+  uintptr_t count;
+} lore_path_merge_rule_array_t;
+
 // Arguments for merging a source branch into the current branch.
 typedef struct lore_branch_merge_start_args_t {
   // Name of the source branch to merge into the current branch
@@ -3520,6 +3547,8 @@ typedef struct lore_branch_merge_start_args_t {
   struct lore_string_t link;
   // Merge only the main repository, skipping all linked repositories
   uint8_t ignore_links;
+  // Ordered per-path merge strategy rules.
+  struct lore_path_merge_rule_array_t path_merge_rules;
 } lore_branch_merge_start_args_t;
 
 // Arguments for switching the working directory to a different branch or revision.

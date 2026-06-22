@@ -829,8 +829,8 @@ impl State {
                     // TODO(mjansson): Figure out a way to write the node block without having to copy
                     // it out of the lock first. Writing from the locked ref will not work as the immutable
                     // write makes the lock held of an await point
-                    let mut node_block = { *block.read().node_block() };
-                    node_block.flags &= !NodeBlockFlags::Dirty;
+                    let mut node_block = { block.read().node_block().clone_on_heap() };
+                    node_block.flags &= !NodeFileMetadataBlockFlags::Dirty;
                     let (address, _) = node_block
                         .write_to_immutable(
                             repository.clone(),
@@ -4356,6 +4356,10 @@ pub async fn diff(
             .find_node_link(repository_to.clone(), path.as_str())
             .await
             .unwrap_or(NodeLink::invalid());
+
+        if !from_link.is_valid_or_root() && !to_link.is_valid_or_root() {
+            return Ok(());
+        }
 
         let mut repository_from = repository_from;
         let state_from = if !from_link.repository.is_zero()

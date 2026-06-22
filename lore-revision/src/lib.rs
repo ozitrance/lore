@@ -40,6 +40,7 @@ pub mod nametable;
 pub mod node;
 pub mod notification;
 pub mod path;
+pub mod path_merge;
 pub mod progress;
 pub mod proto;
 pub mod protocol;

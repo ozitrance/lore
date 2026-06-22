@@ -64,11 +64,11 @@ pub const DEFAULT_REVISION_DIFF_SOURCE_CAP: usize = 100_000;
 #[derive(Clone, Copy, Debug)]
 pub struct RevisionDiffConfig {
     /// Source-side change-count cap. The handler passes this to
-    /// `branch::diff3_with_source_cap` so the producer aborts with
+    /// `branch::diff3_with_options` so the producer aborts with
     /// `BranchError::Oversized` before target's walk runs.
     pub source_cap: usize,
     /// Permit count for the parallel history-walk semaphore inside
-    /// `revision::diff3_with_source_cap`. `None` falls back to
+    /// `revision::diff3_with_options`. `None` falls back to
     /// `lore_revision::revision::DEFAULT_HISTORY_WALK_CONCURRENCY`.
     pub history_walk_concurrency: Option<usize>,
 }
@@ -438,17 +438,18 @@ async fn run_three_way(
     let (producer_tx, mut producer_rx) = mpsc::channel::<Result<DiffItem, BranchError>>(256);
     let repo_clone = repository.clone();
     let producer = lore_spawn!(async move {
-        Box::pin(branch::diff3_with_source_cap(
+        Box::pin(branch::diff3_with_options(
             repo_clone,
             from_branch,
             from_sig,
             to_branch,
             to_sig,
-            None,
-            false,
-            autoresolve,
-            Some(config.source_cap),
-            config.history_walk_concurrency,
+            branch::Diff3Options {
+                auto_resolve: autoresolve,
+                source_cap: Some(config.source_cap),
+                history_walk_concurrency: config.history_walk_concurrency,
+                ..Default::default()
+            },
             producer_tx,
         ))
         .await

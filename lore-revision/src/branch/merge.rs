@@ -51,6 +51,9 @@ use crate::node::NodeFlags;
 use crate::node::NodeID;
 use crate::node::NodeLink;
 use crate::path::emit_path_ignore;
+use crate::path_merge::PathMergePolicy;
+pub use crate::path_merge::PathMergeRule;
+pub use crate::path_merge::PathMergeStrategy;
 use crate::repository::RepositoryContext;
 use crate::repository::RepositoryWriteToken;
 use crate::revision::DiffResult;
@@ -392,6 +395,9 @@ pub struct MergeStartOptions {
     pub no_commit: bool,
     /// Which repositories to include in the merge.
     pub scope: MergeScope,
+    /// Ordered per-path merge rules. The most-specific match wins; equal
+    /// specificity uses the later rule.
+    pub path_merge_rules: Vec<PathMergeRule>,
 }
 
 /// Result of merging a single repository (main or linked).
@@ -420,6 +426,57 @@ pub struct ConflictRealizeContext {
     pub conflicts: Arc<Vec<(NodeChange, NodeChange)>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffChangeSide {
+    Source,
+    Target,
+    Unknown,
+}
+
+fn diff_change_side(change: &NodeChange, source: Hash, target: Hash) -> DiffChangeSide {
+    let revision = change.to.state.revision();
+    if revision == source {
+        DiffChangeSide::Source
+    } else if revision == target {
+        DiffChangeSide::Target
+    } else {
+        DiffChangeSide::Unknown
+    }
+}
+
+fn apply_path_merge_rules(diff: &mut DiffResult, rules: &[PathMergeRule]) {
+    let policy = PathMergePolicy::new(rules);
+    if policy.is_empty() {
+        return;
+    }
+
+    let source = diff.source;
+    let target = diff.target;
+    let change_count = diff.changes.len();
+    diff.changes.retain(|change| {
+        let strategy = policy.strategy_for_change(change);
+        match strategy {
+            PathMergeStrategy::Merge => true,
+            PathMergeStrategy::KeepTarget | PathMergeStrategy::Exclude => {
+                diff_change_side(change, source, target) != DiffChangeSide::Source
+            }
+        }
+    });
+
+    let conflict_count = diff.conflicts.len();
+    diff.conflicts.retain(|(source_change, target_change)| {
+        policy.should_merge_conflict(source_change, target_change)
+    });
+
+    let suppressed_changes = change_count.saturating_sub(diff.changes.len());
+    let suppressed_conflicts = conflict_count.saturating_sub(diff.conflicts.len());
+    if suppressed_changes > 0 || suppressed_conflicts > 0 {
+        lore_debug!(
+            "Path merge strategy suppressed {suppressed_changes} source changes and {suppressed_conflicts} conflicts"
+        );
+    }
+}
+
 async fn merge_repository(
     repository: Arc<RepositoryContext>,
     token: &RepositoryWriteToken,
@@ -427,6 +484,7 @@ async fn merge_repository(
     current_branch: BranchId,
     current_signature: Hash,
     state_current: Arc<State>,
+    path_merge_rules: &[PathMergeRule],
 ) -> Result<MergeRepositoryResult, MergeError> {
     let latest_merge = branch::load_latest(repository.clone(), source_branch)
         .await
@@ -553,15 +611,19 @@ async fn merge_repository(
         return Err(MergeError::internal("Cannot merge a branch with itself"));
     }
 
-    let diff = Box::pin(branch::diff3_collect(
+    let diff = Box::pin(branch::diff3_collect_with_options(
         repository.clone(),
         source_branch,
         revision,
         current_branch,
         current_signature,
-        None,  /* No path */
-        true,  /* Include identical changes for merge tracking */
-        false, /* Do not autoresolve, this is done later */
+        branch::Diff3Options {
+            path: None,
+            include_same: true,  /* Include identical changes for merge tracking */
+            auto_resolve: false, /* Do not autoresolve, this is done later */
+            path_merge_rules,
+            ..Default::default()
+        },
     ))
     .await
     .forward::<MergeError>("running diff3 for merge")?;
@@ -582,6 +644,7 @@ async fn merge_repository(
         diff,
         state_current,
         MergeType::BranchMerge,
+        path_merge_rules,
         // If this merge is reconciling a remote LATEST with local LATEST of a branch
         // reverse the parent order in order to keep the remote history as the main
         // history line shows in CLI output and other places
@@ -697,6 +760,7 @@ pub async fn merge_start(
                 current_branch,
                 state_current.revision(),
                 state_current,
+                &options.path_merge_rules,
             )
             .await?;
 
@@ -860,6 +924,7 @@ async fn merge_start_link(
         link_branch,
         link_reference.signature,
         link_state,
+        &options.path_merge_rules,
     )
     .await
     .forward_with::<MergeError, _>(|| format!("merging link {link_path}"))?;
@@ -1207,6 +1272,7 @@ async fn merge_start_all(
             eligible.resolved_branch,
             eligible.link_reference.signature,
             link_state,
+            &options.path_merge_rules,
         )
         .await
         .forward_with::<MergeError, _>(|| format!("merging link {}", eligible.link_path))?;
@@ -1448,6 +1514,7 @@ async fn finalize_main_merge(
         current_branch,
         state_current.revision(),
         state_current,
+        &options.path_merge_rules,
     )
     .await?;
 
@@ -1531,6 +1598,7 @@ pub async fn apply_diff(
     mut diff: DiffResult,
     state_current: Arc<State>,
     merge_type: MergeType,
+    path_merge_rules: &[PathMergeRule],
     reverse_parents: bool,
     target_branch: BranchId,
 ) -> Result<ApplyDiffResults, MergeError> {
@@ -1568,6 +1636,10 @@ pub async fn apply_diff(
         diff.conflicts.retain(|(from, to)| {
             from.to.repository.id == repository.id && to.to.repository.id == repository.id
         });
+    }
+
+    if matches!(merge_type, MergeType::BranchMerge) {
+        apply_path_merge_rules(&mut diff, path_merge_rules);
     }
 
     let stats = Arc::new(sync::SyncVerifyStats::default());
