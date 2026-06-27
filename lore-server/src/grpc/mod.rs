@@ -4,6 +4,8 @@ use futures::FutureExt;
 pub mod admin_service;
 pub mod environment;
 pub mod environment_service;
+pub mod forwarded_requests;
+pub mod forwarded_revision;
 pub mod handlers;
 pub mod lock_service;
 pub mod notification_service;

@@ -1671,6 +1671,7 @@ impl ImmutableStoreTrait for AwsImmutableStore {
         self: Arc<Self>,
         _max_capacity: usize,
         _sync_data: bool,
+        _sink: Option<lore_storage::gc_event::GcEventSinkRef>,
     ) -> Result<usize, StoreError> {
         // AWS store does not evict anything, ever
         Ok(0)
@@ -1681,6 +1682,7 @@ impl ImmutableStoreTrait for AwsImmutableStore {
         _max_size: usize,
         _at: Option<usize>,
         _sync_data: bool,
+        _sink: Option<lore_storage::gc_event::GcEventSinkRef>,
     ) -> Result<Option<usize>, StoreError> {
         // AWS store does not compact anything, ever
         Ok(None)

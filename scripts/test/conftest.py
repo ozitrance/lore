@@ -167,11 +167,36 @@ def global_dir_name(tmp_path_factory):
     yield path
 
 
+def _wait_for_service_ready(lore_executable_path, service_process, attempts=30):
+    """Block until the background service answers a probe."""
+    probe_env = os.environ.copy()
+    probe_env["LORE_USE_SERVICE"] = "1"
+    for _ in range(attempts):
+        if service_process.poll() is not None:
+            pytest.fail(
+                "Lore service process exited during startup with code "
+                f"{service_process.returncode}"
+            )
+        probe = subprocess.run(
+            [lore_executable_path, "repository", "list"],
+            capture_output=True,
+            text=True,
+            env=probe_env,
+        )
+        out = probe.stdout + probe.stderr
+        if "connecting to local socket" not in out and "10022" not in out:
+            return
+        sleep(1)
+    pytest.fail("Timed out waiting for Lore background service to accept connections")
+
+
 @pytest.fixture(scope="function")
 def background_lore_service(lore_executable_path):
     command_args = [lore_executable_path, "service", "run"]
     logger.info("Executing Lore service command: %s", command_args)
     service_process = subprocess.Popen(command_args)
+
+    _wait_for_service_ready(lore_executable_path, service_process)
 
     yield service_process
 

@@ -72,9 +72,17 @@ pub async fn write_fragmented(
             // Run it on the shared compute pool alongside compression so it
             // doesn't contend with blocking IO on tokio's blocking pool.
             let chunker = chunker.clone();
+            // The chunker borrows `buffer` via a forged `'static` slice (see
+            // `extend_lifetime` above). The rayon task is detached and is not
+            // cancelled if this future is dropped at the `rx.await` below, so
+            // we must keep the buffer allocation alive for the whole task.
+            // `Bytes::clone` bumps the refcount with a stable data pointer,
+            // guaranteeing the slice stays valid until the task finishes.
+            let buffer_guard = buffer.clone();
             let (tx, rx) = tokio::sync::oneshot::channel();
             lore_base::runtime::compute_pool().spawn(move || {
                 let _ = tx.send(chunker.cut(chunk_offset, chunk_remain));
+                drop(buffer_guard);
             });
             let (_, chunk_end) = rx
                 .await

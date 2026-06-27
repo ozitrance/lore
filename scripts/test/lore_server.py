@@ -67,19 +67,34 @@ class _XdistControllerCleanup:
 
 
 def allocate_free_port(host: str = "127.0.0.1") -> int:
-    """Ask the OS for a free ephemeral port by briefly binding to :0.
+    """Ask the OS for a loopback port free for both TCP and UDP.
 
-    Only loopback is supported — the allocation and the subsequent server
-    bind must target the same address space; binding to 0.0.0.0 or a LAN IP
-    would allocate against a different port namespace than the loopback
-    clients use.
+    gRPC (TCP) and QUIC (UDP) share one port number, so a TCP-only probe is
+    not enough: on Windows a TCP-free port can be reserved for UDP, failing
+    the QUIC bind with WSAEACCES. We pick a TCP port and confirm the same
+    number is UDP-bindable, retrying otherwise.
     """
     assert host == "127.0.0.1", (
         f"allocate_free_port only supports 127.0.0.1, got {host!r}"
     )
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
+    last_err: OSError | None = None
+    for _ in range(20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+            tcp.bind((host, 0))
+            port = tcp.getsockname()[1]
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                udp.bind((host, port))
+            except OSError as e:
+                last_err = e
+                continue
+            finally:
+                udp.close()
+            return port
+    raise ServerException(
+        f"Could not find a port free for both TCP and UDP on {host} "
+        f"after 20 attempts; last UDP bind error: {last_err}"
+    )
 
 
 def generate_server_config(request, tmp_path_factory, ports: dict):

@@ -7,8 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use lore_proto::lore::revision::v1::forwarded_revision_service_server::ForwardedRevisionServiceServer;
 use lore_proto::rpc::replication_service_server::ReplicationServiceServer;
+use lore_revision::notification::NotificationSender;
 use lore_storage::ImmutableStore;
+use lore_storage::MutableStore;
 use lore_telemetry::grpc_tower_layer::GrpcMetricsLayer;
 use lore_telemetry::user_agent_filter::UserAgentFilter;
 use tonic::transport::Certificate;
@@ -20,8 +23,10 @@ use tracing::info;
 use crate::correlation::layer::CorrelationIdLayerBuilder;
 use crate::correlation::layer::TraceLayerConfig;
 use crate::grpc;
+use crate::grpc::forwarded_revision::v1::service::LoreForwardedRevisionV1Service;
 use crate::grpc::replication_service::LoreReplicationService;
 use crate::grpc::tower::tracing::LoreTracingLayer;
+use crate::hooks::HookDispatcher;
 
 // Why Tower, why?
 // Just try to make this type alias match the 'router' type in GrpcServerBuilder.
@@ -55,29 +60,41 @@ type GrpcRouter = tonic::transport::server::Router<
 #[derive(Debug, Default)]
 pub struct GrpcInternalServerBuilder<State>(State);
 
-pub struct WantsImmutableStore(());
+pub struct WantsComponents(());
 
-impl GrpcInternalServerBuilder<WantsImmutableStore> {
+impl GrpcInternalServerBuilder<WantsComponents> {
     pub fn new() -> Self {
-        Self(WantsImmutableStore(()))
+        Self(WantsComponents(()))
     }
 
-    pub fn with_local_immutable_store(
+    pub fn with_components(
         self,
+        local_immutable_store: Arc<dyn ImmutableStore>,
         immutable_store: Arc<dyn ImmutableStore>,
+        mutable_store: Arc<dyn MutableStore>,
+        notification_sender: Arc<dyn NotificationSender>,
+        hook_dispatcher: Arc<HookDispatcher>,
     ) -> anyhow::Result<GrpcInternalServerBuilder<WantsTlsConfig>> {
-        if !immutable_store.is_local() {
+        if !local_immutable_store.is_local() {
             return Err(anyhow!("Immutable store must be a local store"));
         }
 
         Ok(GrpcInternalServerBuilder(WantsTlsConfig {
-            local_immutable_store: immutable_store,
+            local_immutable_store,
+            immutable_store,
+            mutable_store,
+            notification_sender,
+            hook_dispatcher,
         }))
     }
 }
 
 pub struct WantsTlsConfig {
     local_immutable_store: Arc<dyn ImmutableStore>,
+    immutable_store: Arc<dyn ImmutableStore>,
+    mutable_store: Arc<dyn MutableStore>,
+    notification_sender: Arc<dyn NotificationSender>,
+    hook_dispatcher: Arc<HookDispatcher>,
 }
 
 impl GrpcInternalServerBuilder<WantsTlsConfig> {
@@ -122,6 +139,10 @@ impl GrpcInternalServerBuilder<WantsTlsConfig> {
 
         Ok(GrpcInternalServerBuilder(WantsHttp2Config {
             local_immutable_store: self.0.local_immutable_store,
+            immutable_store: self.0.immutable_store,
+            mutable_store: self.0.mutable_store,
+            notification_sender: self.0.notification_sender,
+            hook_dispatcher: self.0.hook_dispatcher,
             tls_config,
         }))
     }
@@ -129,6 +150,10 @@ impl GrpcInternalServerBuilder<WantsTlsConfig> {
 
 pub struct WantsHttp2Config {
     local_immutable_store: Arc<dyn ImmutableStore>,
+    immutable_store: Arc<dyn ImmutableStore>,
+    mutable_store: Arc<dyn MutableStore>,
+    notification_sender: Arc<dyn NotificationSender>,
+    hook_dispatcher: Arc<HookDispatcher>,
     tls_config: Option<ServerTlsConfig>,
 }
 
@@ -138,6 +163,7 @@ impl GrpcInternalServerBuilder<WantsHttp2Config> {
         http2_keep_alive_interval: Option<Duration>,
         http2_keep_alive_timeout: Option<Duration>,
         user_agent_filter: Arc<UserAgentFilter>,
+        rpc_timeout: Duration,
     ) -> anyhow::Result<GrpcInternalServerBuilder<WantsAddress>> {
         let metrics_layer =
             tower::ServiceBuilder::new().layer(GrpcMetricsLayer::new(user_agent_filter));
@@ -149,7 +175,7 @@ impl GrpcInternalServerBuilder<WantsHttp2Config> {
             server = server.tls_config(tls_config)?;
         }
         let tracing_levels = TraceLayerConfig::default();
-        let router = server
+        let mut router = server
             .layer(
                 CorrelationIdLayerBuilder::new()
                     .with_grpc_tracer(tracing_levels)
@@ -160,6 +186,16 @@ impl GrpcInternalServerBuilder<WantsHttp2Config> {
             .add_service(ReplicationServiceServer::new(LoreReplicationService::new(
                 self.0.local_immutable_store,
             )?));
+
+        router = router.add_service(ForwardedRevisionServiceServer::new(
+            LoreForwardedRevisionV1Service::new(
+                self.0.immutable_store,
+                self.0.mutable_store,
+                self.0.notification_sender,
+                self.0.hook_dispatcher,
+                rpc_timeout,
+            ),
+        ));
 
         Ok(GrpcInternalServerBuilder(WantsAddress { router }))
     }
