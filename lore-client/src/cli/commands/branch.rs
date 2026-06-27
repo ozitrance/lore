@@ -141,6 +141,21 @@ impl From<&BranchSourceSpecifier> for LoreString {
     }
 }
 
+#[derive(Clone, Default, Args)]
+pub struct BranchMergePathStrategyArgs {
+    /// Path merge rules as strategy:path entries, e.g. keep-target:.git,exclude:generated
+    #[clap(long, value_name = "strategy:path", value_delimiter = ',')]
+    merge_strategy: Vec<String>,
+
+    /// Keep the current target branch version for matching paths
+    #[clap(long, value_name = "path", value_delimiter = ',')]
+    keep_target: Vec<String>,
+
+    /// Exclude matching source changes from the merge
+    #[clap(long, value_name = "path", value_delimiter = ',')]
+    exclude: Vec<String>,
+}
+
 #[derive(Args)]
 #[command(subcommand_negates_reqs = true)]
 pub struct BranchMergeArgs {
@@ -155,6 +170,9 @@ pub struct BranchMergeArgs {
     /// Change the message for committing when no conflicts arise from the merge
     #[clap(long, action)]
     message: Option<String>,
+
+    #[clap(flatten)]
+    path_strategy: BranchMergePathStrategyArgs,
 }
 
 #[derive(Args)]
@@ -183,17 +201,8 @@ pub struct BranchMergeStartArgs {
     #[clap(long, action, conflicts_with = "link")]
     ignore_links: bool,
 
-    /// Path merge rules as strategy:path entries, e.g. keep-target:.git,exclude:generated
-    #[clap(long, value_name = "strategy:path", value_delimiter = ',')]
-    merge_strategy: Vec<String>,
-
-    /// Keep the current target branch version for matching paths
-    #[clap(long, value_name = "path", value_delimiter = ',')]
-    keep_target: Vec<String>,
-
-    /// Exclude matching source changes from the merge
-    #[clap(long, value_name = "path", value_delimiter = ',')]
-    exclude: Vec<String>,
+    #[clap(flatten)]
+    path_strategy: BranchMergePathStrategyArgs,
 }
 
 #[derive(Args)]
@@ -1064,7 +1073,9 @@ fn push_path_merge_rule(
     Ok(())
 }
 
-fn parse_path_merge_rules(args: &BranchMergeStartArgs) -> Result<Vec<LorePathMergeRule>, String> {
+fn parse_path_merge_rules(
+    args: &BranchMergePathStrategyArgs,
+) -> Result<Vec<LorePathMergeRule>, String> {
     let mut rules = Vec::new();
 
     for value in &args.merge_strategy {
@@ -1088,7 +1099,7 @@ fn parse_path_merge_rules(args: &BranchMergeStartArgs) -> Result<Vec<LorePathMer
 }
 
 fn handle_branch_merge_start(globals: LoreGlobalArgs, args: &BranchMergeStartArgs) -> u8 {
-    let path_merge_rules = match parse_path_merge_rules(args) {
+    let path_merge_rules = match parse_path_merge_rules(&args.path_strategy) {
         Ok(rules) => rules,
         Err(err) => {
             println!("error: {err}");
@@ -1336,9 +1347,7 @@ pub fn handle_branch_merge(globals: LoreGlobalArgs, args: &BranchMergeArgs) -> u
             dry_run: false,
             link: None,
             ignore_links: false,
-            merge_strategy: Vec::new(),
-            keep_target: Vec::new(),
-            exclude: Vec::new(),
+            path_strategy: args.path_strategy.clone(),
         };
 
         return handle_branch_merge_start(globals, &sub_args);

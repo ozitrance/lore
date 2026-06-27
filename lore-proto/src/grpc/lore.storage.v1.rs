@@ -82,7 +82,7 @@ impl ::prost::Name for QueryResponse {
         "/lore.storage.v1.QueryResponse".into()
     }
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PresignDownloadRequest {
     #[prost(message, repeated, tag = "1")]
     pub addresses: ::prost::alloc::vec::Vec<crate::lore::model::v1::Address>,
@@ -120,7 +120,7 @@ impl ::prost::Name for PresignedDownload {
         "/lore.storage.v1.PresignedDownload".into()
     }
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PresignDownloadResponse {
     #[prost(message, repeated, tag = "1")]
     pub downloads: ::prost::alloc::vec::Vec<PresignedDownload>,
