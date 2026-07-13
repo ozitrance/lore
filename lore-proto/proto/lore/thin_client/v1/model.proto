@@ -113,6 +113,10 @@ message TreeNode {
   NodeType node_type = 2;
   // Content address for FILE / LINK entries; unused for DIRECTORY.
   lore.model.v1.Address address = 3;
+  // Signature of the revision in the requested repository that most recently
+  // changed this entry. Empty for directories. Descendants of a linked
+  // repository inherit the revision that last changed the link pin.
+  bytes last_changed_revision_signature = 4;
 }
 
 // Self-describing revision record. Carries the resolved RevisionIdentifier

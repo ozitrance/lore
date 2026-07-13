@@ -885,6 +885,7 @@ pub fn handle_repository_create(globals: LoreGlobalArgs, args: &RepositoryCreate
         repository_url: url.into(),
         id: LoreString::from(&args.id),
         description: LoreString::from(&args.description),
+        default_branch_name: LoreString::default(),
         use_shared_store: args.use_shared_store as u8,
         shared_store_path: args.shared_store_path.as_ref().into(),
     };

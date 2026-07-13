@@ -5,6 +5,7 @@ pub mod dump;
 mod sink;
 
 use core::str;
+use std::collections::HashSet;
 use std::future::Future;
 use std::io::Write;
 use std::mem::size_of;
@@ -3315,6 +3316,7 @@ pub struct TreePath {
     pub path: RelativePath,
     pub address: Option<Address>,
     pub flags: NodeFlags,
+    pub last_changed_revision: Option<Hash>,
 }
 
 pub type CanReadRepository = Arc<dyn Fn(RepositoryId) -> bool + Send + Sync>;
@@ -3368,6 +3370,7 @@ pub async fn gather_tree_paths(
         0,
         max_depth,
         0,
+        None,
         can_read,
         &mut paths,
     )
@@ -3384,6 +3387,7 @@ async fn enumerate_children(
     depth: usize,
     max_depth: usize,
     link_depth: usize,
+    inherited_last_changed_revision: Option<Hash>,
     can_read: CanReadRepository,
     result: &mut Vec<TreePath>,
 ) -> Result<(), StateError> {
@@ -3397,6 +3401,21 @@ async fn enumerate_children(
         }
         .into());
     }
+    let changed_nodes = if inherited_last_changed_revision.is_some() {
+        Arc::new(HashSet::new())
+    } else {
+        let delta = state
+            .delta_block(repository.clone())
+            .await?
+            .to_aligned::<NodeDelta>();
+        Arc::new(
+            delta
+                .as_type_slice::<NodeDelta>()
+                .iter()
+                .map(|entry| entry.node)
+                .collect(),
+        )
+    };
     let mut cycle = SiblingCycleGuard::new(parent_node_id);
     gather_tree_paths_node_recurse(
         state,
@@ -3407,6 +3426,8 @@ async fn enumerate_children(
         depth,
         max_depth,
         link_depth,
+        changed_nodes,
+        inherited_last_changed_revision,
         can_read,
         result,
         &mut cycle,
@@ -3444,6 +3465,8 @@ async fn gather_tree_paths_node(
     depth: usize,
     max_depth: usize,
     link_depth: usize,
+    changed_nodes: Arc<HashSet<NodeID>>,
+    inherited_last_changed_revision: Option<Hash>,
     can_read: CanReadRepository,
     result: &mut Vec<TreePath>,
     cycle: &mut SiblingCycleGuard,
@@ -3474,10 +3497,35 @@ async fn gather_tree_paths_node(
     } else {
         NodeFlags::NoFlags
     };
+    let last_changed_revision = if node.is_directory() {
+        None
+    } else if let Some(revision) = inherited_last_changed_revision {
+        Some(revision)
+    } else if changed_nodes.contains(&node_id) {
+        Some(state.revision())
+    } else {
+        let metadata_node = node::node_to_file_metadata(node_id);
+        let metadata_block = state
+            .block_file_metadata(
+                repository.clone(),
+                NodeFileMetadataBlock::index(metadata_node),
+            )
+            .await?;
+        let revision = metadata_block
+            .read()
+            .node(NodeFileMetadata::index(metadata_node))
+            .revision[0];
+        Some(if revision.is_zero() {
+            state.revision()
+        } else {
+            revision
+        })
+    };
     result.push(TreePath {
         path: node_path.clone(),
         address,
         flags,
+        last_changed_revision,
     });
 
     let depth_remaining = max_depth == 0 || depth + 1 < max_depth;
@@ -3492,6 +3540,8 @@ async fn gather_tree_paths_node(
             depth + 1,
             max_depth,
             link_depth,
+            changed_nodes.clone(),
+            inherited_last_changed_revision,
             can_read,
             result,
             &mut child_cycle,
@@ -3516,6 +3566,7 @@ async fn gather_tree_paths_node(
                         depth + 1,
                         max_depth,
                         link_depth + 1,
+                        last_changed_revision,
                         can_read,
                         result,
                     )
@@ -3554,6 +3605,8 @@ fn gather_tree_paths_node_recurse<'a>(
     depth: usize,
     max_depth: usize,
     link_depth: usize,
+    changed_nodes: Arc<HashSet<NodeID>>,
+    inherited_last_changed_revision: Option<Hash>,
     can_read: CanReadRepository,
     result: &'a mut Vec<TreePath>,
     cycle: &'a mut SiblingCycleGuard,
@@ -3570,6 +3623,8 @@ fn gather_tree_paths_node_recurse<'a>(
                 depth,
                 max_depth,
                 link_depth,
+                changed_nodes.clone(),
+                inherited_last_changed_revision,
                 can_read.clone(),
                 result,
                 cycle,

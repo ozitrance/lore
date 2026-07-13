@@ -4247,6 +4247,8 @@ typedef struct lore_repository_create_args_t {
   struct lore_string_t description;
   // Optional repository ID, set to empty string to generate a new ID
   struct lore_string_t id;
+  // Optional default branch name, set to empty string to use the Lore default
+  struct lore_string_t default_branch_name;
   // Use the shared store instead of a local immutable store
   uint8_t use_shared_store;
   // [Optional] Path to use for the shared store, an empty string means to use the default

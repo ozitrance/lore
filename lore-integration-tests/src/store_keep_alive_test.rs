@@ -81,6 +81,7 @@ mod store_keep_alive_tests {
                 repository_url: "lore://localhost/test-keep-alive".into(),
                 description: LoreString::default(),
                 id: LoreString::default(),
+                default_branch_name: LoreString::default(),
                 use_shared_store: 0,
                 shared_store_path: LoreString::default(),
             },

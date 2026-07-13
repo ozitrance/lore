@@ -111,6 +111,11 @@ pub struct TreeNode {
     /// Content address for FILE / LINK entries; unused for DIRECTORY.
     #[prost(message, optional, tag = "3")]
     pub address: ::core::option::Option<crate::lore::model::v1::Address>,
+    /// Signature of the revision in the requested repository that most recently
+    /// changed this entry. Empty for directories. Descendants of a linked
+    /// repository inherit the revision that last changed the link pin.
+    #[prost(bytes = "bytes", tag = "4")]
+    pub last_changed_revision_signature: ::prost::bytes::Bytes,
 }
 impl ::prost::Name for TreeNode {
     const NAME: &'static str = "TreeNode";

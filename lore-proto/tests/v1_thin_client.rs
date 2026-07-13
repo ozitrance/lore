@@ -115,6 +115,7 @@ fn v1_thin_client_field_shapes() {
         path: _,
         node_type: _,
         address: _,
+        last_changed_revision_signature: _,
     } = TreeNode::default();
 
     // Revision + nested Parent + Metadata
