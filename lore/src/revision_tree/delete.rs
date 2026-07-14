@@ -146,6 +146,7 @@ async fn delete_impl(
         },
         async move |internal, args: LoreRevisionTreeDeleteArgs| {
             let id = args.id;
+            let state = internal.state();
             let fail = |reason: &str| {
                 emit_delete_complete(id, LoreErrorCode::InvalidArguments);
                 Err(invalid(reason))
@@ -159,8 +160,7 @@ async fn delete_impl(
                 return fail("node id is invalid (the root cannot be deleted)");
             }
 
-            let Ok(node) = internal
-                .state()
+            let Ok(node) = state
                 .node(internal.repository_context.clone(), args.node_id)
                 .await
             else {
@@ -178,7 +178,7 @@ async fn delete_impl(
             }
 
             if let Err(error) = mark_delete_subtree(
-                internal.state(),
+                state.clone(),
                 internal.repository_context.clone(),
                 args.node_id,
             )
@@ -205,8 +205,7 @@ async fn delete_impl(
                 let mut child_node_iter = node.child();
                 let mut cycle = SiblingCycleGuard::new(args.node_id);
                 while let Some(child_node_id) = child_node_iter {
-                    let child_node = match internal
-                        .state()
+                    let child_node = match state
                         .node(internal.repository_context.clone(), child_node_id)
                         .await
                     {
@@ -219,7 +218,7 @@ async fn delete_impl(
                     }
                     let next_sibling = child_node.sibling();
                     if let Err(error) = state::node_discard_nopatch(
-                        internal.state(),
+                        state.clone(),
                         internal.repository_context.clone(),
                         child_node_id,
                         true,
@@ -235,7 +234,7 @@ async fn delete_impl(
             }
 
             if let Err(error) = state::node_discard_patch(
-                internal.state(),
+                state,
                 internal.repository_context.clone(),
                 args.node_id,
                 handler,

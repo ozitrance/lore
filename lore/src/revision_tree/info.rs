@@ -101,8 +101,9 @@ async fn info_impl(
         },
         async move |internal, args: LoreRevisionTreeInfoArgs| {
             let id = args.id;
+            let state = internal.state();
 
-            let metadata_hash = internal.state().metadata_hash();
+            let metadata_hash = state.metadata_hash();
             let metadata = if metadata_hash.is_zero() {
                 Metadata::default()
             } else {
@@ -131,8 +132,8 @@ async fn info_impl(
             LoreEvent::RevisionTreeInfo(LoreRevisionTreeInfoEventData {
                 id,
                 repository: internal.repository,
-                revision: internal.state().revision(),
-                parent: internal.state().parents(),
+                revision: state.revision(),
+                parent: state.parents(),
                 creation_timestamp,
                 author_identity,
                 metadata_key_count,

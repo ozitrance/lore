@@ -132,6 +132,7 @@ async fn add_impl(
         },
         async move |internal, args: LoreRevisionTreeAddArgs| {
             let id = args.id;
+            let state = internal.state();
             let fail = |reason: &str| {
                 emit_add_complete(id, INVALID_NODE, LoreErrorCode::InvalidArguments);
                 Err(invalid(reason))
@@ -179,8 +180,7 @@ async fn add_impl(
                 }
             }
 
-            let Ok(parent) = internal
-                .state()
+            let Ok(parent) = state
                 .node(internal.repository_context.clone(), args.parent_node_id)
                 .await
             else {
@@ -198,8 +198,7 @@ async fn add_impl(
             // the id landed on an unallocated slot rather than a real node
             // (consistent with `node_info`).
             if args.parent_node_id != ROOT_NODE {
-                match internal
-                    .state()
+                match state
                     .node_name_clone(internal.repository_context.clone(), args.parent_node_id)
                     .await
                 {
@@ -218,8 +217,7 @@ async fn add_impl(
             }
 
             let name_hash = hash_string(name);
-            match internal
-                .state()
+            match state
                 .find_subnode(
                     internal.repository_context.clone(),
                     args.parent_node_id,
@@ -249,8 +247,7 @@ async fn add_impl(
                 ..Default::default()
             };
 
-            let node_id = match internal
-                .state()
+            let node_id = match state
                 .node_add(
                     internal.repository_context.clone(),
                     args.parent_node_id,
@@ -266,8 +263,7 @@ async fn add_impl(
                 }
             };
 
-            if let Err(error) = internal
-                .state()
+            if let Err(error) = state
                 .node_mark(
                     internal.repository_context.clone(),
                     node_id,

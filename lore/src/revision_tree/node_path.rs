@@ -110,6 +110,7 @@ async fn node_path_impl(
         },
         async move |internal, args: LoreRevisionTreeNodePathArgs| {
             let id = args.id;
+            let state = internal.state();
             let node_id = args.node_id;
 
             if !node_id.is_valid_or_root_node_id() {
@@ -120,8 +121,7 @@ async fn node_path_impl(
             // A discarded slot keeps its name (and parent link) for history
             // weaving, so the path would reconstruct; the node itself is
             // gone (e.g. deleted through this handle).
-            if let Ok(node) = internal
-                .state()
+            if let Ok(node) = state
                 .node(internal.repository_context.clone(), node_id)
                 .await
                 && node.is_discarded()
@@ -133,8 +133,7 @@ async fn node_path_impl(
             // An unresolvable id is a bad argument; `State::node_path` does not
             // distinguish an out-of-range id from a read failure, so both collapse to
             // `InvalidArguments` (as in `list_children`).
-            let Ok(path) = internal
-                .state()
+            let Ok(path) = state
                 .node_path(internal.repository_context.clone(), node_id)
                 .await
             else {
@@ -152,7 +151,7 @@ async fn node_path_impl(
             LoreEvent::RevisionTreeNodePath(LoreRevisionTreeNodePathEventData {
                 id,
                 repository: internal.repository,
-                revision: internal.state().revision(),
+                revision: state.revision(),
                 path: LoreString::from(path.as_str()),
                 error_code: LoreErrorCode::None,
             })

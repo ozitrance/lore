@@ -117,6 +117,7 @@ async fn resolve_path_impl(
         },
         async move |internal, args: LoreRevisionTreeResolvePathArgs| {
             let id = args.id;
+            let state = internal.state();
             let Ok(path) = std::str::from_utf8(args.path.as_bytes()) else {
                 emit_resolve_complete(
                     id,
@@ -135,14 +136,13 @@ async fn resolve_path_impl(
                     id,
                     ROOT_NODE,
                     internal.repository,
-                    internal.state().revision(),
+                    state.revision(),
                     LoreErrorCode::None,
                 );
                 return Ok(());
             }
 
-            match internal
-                .state()
+            match state
                 .find_node_link(internal.repository_context.clone(), path)
                 .await
             {

@@ -117,6 +117,7 @@ async fn modify_impl(
         },
         async move |internal, args: LoreRevisionTreeModifyArgs| {
             let id = args.id;
+            let state = internal.state();
             let fail = |reason: &str| {
                 emit_modify_complete(id, INVALID_NODE, LoreErrorCode::InvalidArguments);
                 Err(invalid(reason))
@@ -128,8 +129,7 @@ async fn modify_impl(
 
             let block_index = NodeBlock::index(args.node_id);
             let node_index = Node::index(args.node_id);
-            let Ok(block) = internal
-                .state()
+            let Ok(block) = state
                 .block(internal.repository_context.clone(), block_index)
                 .await
             else {
@@ -165,8 +165,8 @@ async fn modify_impl(
                 block_writer.mark_dirty()
             };
             if dirtied {
-                internal.state().block_modified(block.clone(), block_index);
-                internal.state().mark_dirty();
+                state.block_modified(block.clone(), block_index);
+                state.mark_dirty();
             }
 
             // A node added in this handle stays an add — recording it as a
@@ -177,8 +177,7 @@ async fn modify_impl(
             } else {
                 NodeFlags::StagedModify
             };
-            if let Err(error) = internal
-                .state()
+            if let Err(error) = state
                 .node_mark(
                     internal.repository_context.clone(),
                     args.node_id,
