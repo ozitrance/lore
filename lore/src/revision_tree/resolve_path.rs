@@ -135,14 +135,14 @@ async fn resolve_path_impl(
                     id,
                     ROOT_NODE,
                     internal.repository,
-                    internal.state.revision(),
+                    internal.state().revision(),
                     LoreErrorCode::None,
                 );
                 return Ok(());
             }
 
             match internal
-                .state
+                .state()
                 .find_node_link(internal.repository_context.clone(), path)
                 .await
             {
@@ -274,7 +274,7 @@ mod tests {
         let entry = rt_handle::REGISTRY
             .get(&handle.handle_id)
             .expect("handle registered");
-        (entry.state.clone(), entry.repository_context.clone())
+        (entry.state(), entry.repository_context.clone())
     }
 
     /// Add a link node under root targeting `(repository, revision, target_node)`.
