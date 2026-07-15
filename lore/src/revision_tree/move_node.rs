@@ -6,29 +6,29 @@
 //! `move_node` because `move` is a reserved keyword; the C symbol stays
 //! `lore_revision_tree_move`.
 
-use std::pin::Pin;
+#[cfg(test)]
 use std::sync::Arc;
 
-use lore_base::error::InvalidArguments;
-use lore_error_set::prelude::*;
 use lore_macro::LoreArgs;
-use lore_revision::errors::StateErrors;
-use lore_revision::event::EventError;
 use lore_revision::event::LoreErrorCode;
 use lore_revision::event::LoreEvent;
 use lore_revision::event::revision_tree::LoreRevisionTreeMoveCompleteEventData;
-use lore_revision::interface::LoreError;
 use lore_revision::interface::LoreString;
 use lore_revision::node::INVALID_NODE;
+#[cfg(test)]
 use lore_revision::node::Node;
+#[cfg(test)]
 use lore_revision::node::NodeBlock;
+#[cfg(test)]
 use lore_revision::node::NodeFlags;
 use lore_revision::node::NodeID;
-use lore_revision::node::NodeIDExt;
+#[cfg(test)]
 use lore_revision::node::ROOT_NODE;
-use lore_revision::node::SiblingCycleGuard;
+#[cfg(test)]
 use lore_revision::repository::RepositoryContext;
+#[cfg(test)]
 use lore_revision::state::State;
+#[cfg(test)]
 use lore_storage::hash::hash_string;
 use serde::Deserialize;
 use serde::Serialize;
@@ -56,30 +56,6 @@ pub struct LoreRevisionTreeMoveArgs {
     pub dst_name: LoreString,
 }
 
-#[error_set]
-enum MoveError {
-    InvalidArguments,
-}
-
-impl EventError for MoveError {
-    fn translated(&self) -> LoreError {
-        match self {
-            MoveError::InvalidArguments(_) => LoreError::InvalidArguments,
-            MoveError::Internal(_) => LoreError::Internal,
-        }
-    }
-
-    fn inner(&self) -> String {
-        self.to_string()
-    }
-}
-
-fn invalid(reason: &str) -> MoveError {
-    MoveError::from(InvalidArguments {
-        reason: reason.into(),
-    })
-}
-
 fn emit_move_complete(id: u64, node_id: NodeID, error_code: LoreErrorCode) {
     LoreEvent::RevisionTreeMoveComplete(LoreRevisionTreeMoveCompleteEventData {
         id,
@@ -87,36 +63,6 @@ fn emit_move_complete(id: u64, node_id: NodeID, error_code: LoreErrorCode) {
         error_code,
     })
     .send();
-}
-
-/// Recursively mark a moved directory's children with the move flag so the
-/// commit delta records their changed paths (mirrors the stage path's
-/// `mark_children_moved`). A child added in this handle stays an add.
-fn mark_children_moved(
-    state: Arc<State>,
-    repository: Arc<RepositoryContext>,
-    parent_node: NodeID,
-    move_flag: NodeFlags,
-) -> Pin<Box<dyn Future<Output = Result<(), StateErrors>> + Send>> {
-    Box::pin(async move {
-        let children = state.node_children(repository.clone(), parent_node).await?;
-        for child_id in children {
-            let child_node = state.node(repository.clone(), child_id).await?;
-            let child_flag = if child_node.is_staged_add() {
-                NodeFlags::StagedAdd
-            } else {
-                move_flag
-            };
-            state
-                .node_mark(repository.clone(), child_id, child_flag, false)
-                .await?;
-            if child_node.is_directory() {
-                mark_children_moved(state.clone(), repository.clone(), child_id, move_flag)
-                    .await?;
-            }
-        }
-        Ok(())
-    })
 }
 
 /// Move a node between parents with optional rename (or rename within one).
@@ -156,262 +102,29 @@ async fn move_impl(
         },
         async move |internal, args: LoreRevisionTreeMoveArgs| {
             let id = args.id;
-            let fail = |reason: &str| {
-                emit_move_complete(id, INVALID_NODE, LoreErrorCode::InvalidArguments);
-                Err(invalid(reason))
-            };
-            let internal_error = |error: StateErrors, context: &str| {
-                emit_move_complete(id, INVALID_NODE, LoreErrorCode::Internal);
-                Err(MoveError::internal_with_context(error, context))
-            };
-            let state = internal.state();
-            let repository = internal.repository_context.clone();
-
-            if !args.node_id.is_valid_node_id() {
-                return fail("node id is invalid (the root cannot be moved)");
-            }
-            if !args.destination_parent_id.is_valid_or_root_node_id() {
-                return fail("destination parent node id is invalid");
-            }
-
-            let Ok(dst_name) = std::str::from_utf8(args.dst_name.as_bytes()) else {
-                return fail("destination name is not valid UTF-8");
-            };
-            if dst_name.is_empty() {
-                return fail("destination name is empty");
-            }
-            if dst_name.contains('/') || dst_name.contains('\\') {
-                return fail("destination name must not contain path separators");
-            }
-
-            let Ok(node) = state.node(repository.clone(), args.node_id).await else {
-                return fail("node id is unknown");
-            };
-            // Every real node has a non-empty name, so a zero name hash means
-            // the id landed on an unallocated slot rather than a real node.
-            if node.name_hash == 0 {
-                return fail("node id does not resolve to a named node");
-            }
-            // A discarded slot keeps its name for history weaving; the node
-            // itself is gone (e.g. deleted through this handle).
-            if node.is_discarded() {
-                return fail("node id resolves to a deleted node");
-            }
-
-            let Ok(destination) = state
-                .node(repository.clone(), args.destination_parent_id)
-                .await
-            else {
-                return fail("destination parent node id is unknown");
-            };
-            if destination.is_discarded() {
-                return fail("destination parent id resolves to a deleted node");
-            }
-            if !destination.is_directory() {
-                return fail("destination parent is not a directory in the handle's own tree");
-            }
-            if args.destination_parent_id != ROOT_NODE {
-                match state
-                    .node_name_clone(repository.clone(), args.destination_parent_id)
-                    .await
-                {
-                    Ok(name) if name.is_empty() => {
-                        return fail("destination parent id does not resolve to a named node");
-                    }
-                    Ok(_) => {}
-                    Err(error) => return internal_error(error, "State::node_name_clone"),
-                }
-            }
-
-            // Walk the destination's parent chain to the root: passing
-            // through the moved node means the destination lives inside the
-            // moved subtree, and linking there would create a cycle.
-            let mut ancestor = args.destination_parent_id;
-            while ancestor.is_valid_node_id() {
-                if ancestor == args.node_id {
-                    return fail("destination lives inside the moved subtree");
-                }
-                let Ok(ancestor_node) = state.node(repository.clone(), ancestor).await else {
-                    return fail("destination parent chain is unreadable");
-                };
-                ancestor = ancestor_node.parent;
-            }
-
-            let dst_name_hash = hash_string(dst_name);
-            if node.parent == args.destination_parent_id && node.name_hash == dst_name_hash {
-                return fail("source and destination are the same");
-            }
-            match state
-                .find_subnode(repository.clone(), args.destination_parent_id, dst_name_hash)
-                .await
+            match lore_revision::revision_tree::move_node(
+                internal.state(),
+                internal.repository_context.clone(),
+                args.node_id,
+                args.destination_parent_id,
+                args.dst_name.as_bytes(),
+            )
+            .await
             {
-                Ok(existing) if existing != args.node_id => {
-                    return fail("destination name already exists under the parent");
+                Ok(node_id) => {
+                    emit_move_complete(id, node_id, LoreErrorCode::None);
+                    Ok(())
                 }
-                Ok(_) => {}
-                Err(error) if error.is_node_not_found() => {}
-                Err(error) => return internal_error(error, "State::find_subnode"),
-            }
-
-            let block_index = NodeBlock::index(args.node_id);
-            let node_index = Node::index(args.node_id);
-            let block = match state.block(repository.clone(), block_index).await {
-                Ok(block) => block,
-                Err(error) => return internal_error(error, "read node block"),
-            };
-            let mut node = block.node(node_index);
-
-            if node.parent != args.destination_parent_id {
-                // Unlink from the previous parent's child chain (mirrors the
-                // stage path's move surgery).
-                let old_parent_id = node.parent;
-                let old_parent_block_index = NodeBlock::index(old_parent_id);
-                let old_parent_node_index = Node::index(old_parent_id);
-                let old_parent_block = match state
-                    .block(repository.clone(), old_parent_block_index)
-                    .await
-                {
-                    Ok(block) => block,
-                    Err(error) => return internal_error(error, "read old parent block"),
-                };
-                let old_parent = old_parent_block.node(old_parent_node_index);
-                if old_parent.child == args.node_id {
-                    let dirtied = {
-                        let mut block_writer = old_parent_block.write();
-                        block_writer.node(old_parent_node_index).child = node.sibling;
-                        block_writer.mark_dirty()
+                Err(error) => {
+                    let error_code = if error.is_invalid_arguments() {
+                        LoreErrorCode::InvalidArguments
+                    } else {
+                        LoreErrorCode::Internal
                     };
-                    if dirtied {
-                        state.block_modified(old_parent_block, old_parent_block_index);
-                        state.mark_dirty();
-                    }
-                } else {
-                    let mut found = false;
-                    let mut child_id = old_parent.child().unwrap_or_default();
-                    let mut cycle = SiblingCycleGuard::new(old_parent_id);
-                    while child_id.is_valid_node_id() {
-                        let child = match state.node(repository.clone(), child_id).await {
-                            Ok(child) => child,
-                            Err(error) => return internal_error(error, "walk old sibling chain"),
-                        };
-                        if let Err(error) = child.walk_step(child_id, old_parent_id, &mut cycle) {
-                            return internal_error(error, "walk old sibling chain");
-                        }
-                        let Some(sibling) = child.sibling() else {
-                            break;
-                        };
-                        if sibling == args.node_id {
-                            let child_block_index = NodeBlock::index(child_id);
-                            let child_node_index = Node::index(child_id);
-                            let child_block = match state
-                                .block(repository.clone(), child_block_index)
-                                .await
-                            {
-                                Ok(block) => block,
-                                Err(error) => {
-                                    return internal_error(error, "read sibling block");
-                                }
-                            };
-                            let dirtied = {
-                                let mut block_writer = child_block.write();
-                                block_writer.node(child_node_index).sibling = node.sibling;
-                                block_writer.mark_dirty()
-                            };
-                            if dirtied {
-                                state.block_modified(child_block, child_block_index);
-                                state.mark_dirty();
-                            }
-                            found = true;
-                            break;
-                        }
-                        child_id = sibling;
-                    }
-                    if !found {
-                        emit_move_complete(id, INVALID_NODE, LoreErrorCode::Internal);
-                        return Err(MoveError::internal(
-                            "node not found in its parent's child chain",
-                        ));
-                    }
-                }
-
-                // Link into the destination parent's child chain.
-                let dst_block_index = NodeBlock::index(args.destination_parent_id);
-                let dst_node_index = Node::index(args.destination_parent_id);
-                let dst_block = match state.block(repository.clone(), dst_block_index).await {
-                    Ok(block) => block,
-                    Err(error) => return internal_error(error, "read destination block"),
-                };
-                let sibling_node_id = dst_block.node(dst_node_index).child;
-                let dirtied = {
-                    let mut block_writer = dst_block.write();
-                    block_writer.node(dst_node_index).child = args.node_id;
-                    block_writer.mark_dirty()
-                };
-                if dirtied {
-                    state.block_modified(dst_block, dst_block_index);
-                    state.mark_dirty();
-                }
-                node.sibling = sibling_node_id;
-            }
-
-            node.parent = args.destination_parent_id;
-            if node.name_hash != dst_name_hash {
-                if let Err(error) = block.deserialize_nametable(repository.clone()).await {
-                    return internal_error(error, "deserialize name table");
-                }
-                node.name_hash = dst_name_hash;
-                let stored = {
-                    let mut block_writer = block.write();
-                    block_writer.node_name_store(dst_name, node.name_offset, node.name_length)
-                };
-                match stored {
-                    Ok((name_offset, name_length)) => {
-                        node.name_offset = name_offset;
-                        node.name_length = name_length;
-                    }
-                    Err(error) => {
-                        emit_move_complete(id, INVALID_NODE, LoreErrorCode::Internal);
-                        return Err(MoveError::internal_with_context(
-                            error,
-                            "store renamed node name",
-                        ));
-                    }
+                    emit_move_complete(id, INVALID_NODE, error_code);
+                    Err(error)
                 }
             }
-
-            let dirtied = {
-                let mut block_writer = block.write();
-                *block_writer.node(node_index) = node;
-                block_writer.mark_dirty()
-            };
-            if dirtied {
-                state.block_modified(block, block_index);
-                state.mark_dirty();
-            }
-
-            // A node added in this handle stays an add — its move is
-            // invisible to the parent revision (mirrors the stage path).
-            let move_flag = if node.is_staged_add() {
-                NodeFlags::StagedAdd
-            } else {
-                NodeFlags::StagedMove
-            };
-            if let Err(error) = state
-                .node_mark(repository.clone(), args.node_id, move_flag, true)
-                .await
-            {
-                return internal_error(error, "State::node_mark");
-            }
-            if node.is_directory()
-                && let Err(error) =
-                    mark_children_moved(state.clone(), repository.clone(), args.node_id, move_flag)
-                        .await
-            {
-                return internal_error(error, "mark children moved");
-            }
-
-            emit_move_complete(id, args.node_id, LoreErrorCode::None);
-            Ok(())
         },
     )
     .await
@@ -505,7 +218,12 @@ mod tests {
         (entry.state(), entry.repository_context.clone())
     }
 
-    async fn add_node(handle: LoreRevisionTree, parent: NodeID, name: &str, is_file: bool) -> NodeID {
+    async fn add_node(
+        handle: LoreRevisionTree,
+        parent: NodeID,
+        name: &str,
+        is_file: bool,
+    ) -> NodeID {
         let (state, repository_context) = handle_state(handle);
         let node = Node {
             flags: if is_file { NodeFlags::File.bits() } else { 0 },
@@ -555,7 +273,8 @@ mod tests {
 
     #[tokio::test]
     async fn move_reparents_a_file_and_preserves_its_file_id() {
-        let (handle, store_handle_id) = load_handle("move-file", Partition::from([0x11u8; 16])).await;
+        let (handle, store_handle_id) =
+            load_handle("move-file", Partition::from([0x11u8; 16])).await;
         let dir_id = add_node(handle, ROOT_NODE, "docs", false).await;
         let file_id = add_node(handle, ROOT_NODE, "doc.md", true).await;
 
@@ -591,7 +310,11 @@ mod tests {
         assert_eq!(name, "renamed.md");
         assert_eq!(
             state
-                .find_subnode(repository_context.clone(), dir_id, hash_string("renamed.md"))
+                .find_subnode(
+                    repository_context.clone(),
+                    dir_id,
+                    hash_string("renamed.md")
+                )
                 .await
                 .expect("the destination must resolve the new name"),
             file_id,
@@ -609,7 +332,8 @@ mod tests {
 
     #[tokio::test]
     async fn rename_within_the_same_parent_succeeds() {
-        let (handle, store_handle_id) = load_handle("move-rename", Partition::from([0x22u8; 16])).await;
+        let (handle, store_handle_id) =
+            load_handle("move-rename", Partition::from([0x22u8; 16])).await;
         let file_id = add_node(handle, ROOT_NODE, "doc.md", true).await;
 
         let (status, events) = run_move(handle, 2, file_id, ROOT_NODE, "renamed.md").await;
@@ -627,14 +351,19 @@ mod tests {
 
     #[tokio::test]
     async fn move_into_own_subtree_returns_invalid_arguments() {
-        let (handle, store_handle_id) = load_handle("move-cycle", Partition::from([0x33u8; 16])).await;
+        let (handle, store_handle_id) =
+            load_handle("move-cycle", Partition::from([0x33u8; 16])).await;
         let outer = add_node(handle, ROOT_NODE, "outer", false).await;
         let inner = add_node(handle, outer, "inner", false).await;
 
         let (status, events) = run_move(handle, 3, outer, inner, "outer").await;
         assert_eq!(status, 1, "a move into the moved subtree must fail");
         let (_, error_code) = move_outcome(&events, 3).expect("MoveComplete must fire");
-        assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+        assert_eq!(
+            error_code,
+            LoreErrorCode::InvalidArguments,
+            "got {events:?}"
+        );
 
         let (status, events) = run_move(handle, 4, outer, outer, "self").await;
         assert_eq!(status, 1, "a move into itself must fail, got {events:?}");
@@ -653,7 +382,11 @@ mod tests {
         let (status, events) = run_move(handle, 5, file_id, dir_id, "taken.md").await;
         assert_eq!(status, 1, "an occupied destination name must fail");
         let (_, error_code) = move_outcome(&events, 5).expect("MoveComplete must fire");
-        assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+        assert_eq!(
+            error_code,
+            LoreErrorCode::InvalidArguments,
+            "got {events:?}"
+        );
 
         let (status, events) = run_move(handle, 6, file_id, ROOT_NODE, "doc.md").await;
         assert_eq!(status, 1, "a no-op move must fail, got {events:?}");
@@ -752,7 +485,11 @@ mod tests {
         let events = sink.lock().unwrap().clone();
         let (node_id, error_code) = move_outcome(&events, 13)
             .expect("a handle miss must still emit MoveComplete carrying the caller id");
-        assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+        assert_eq!(
+            error_code,
+            LoreErrorCode::InvalidArguments,
+            "got {events:?}"
+        );
         assert_eq!(node_id, INVALID_NODE);
         assert!(events.contains(&CapturedEvent::Complete(1)));
     }

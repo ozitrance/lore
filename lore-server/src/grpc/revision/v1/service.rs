@@ -18,6 +18,8 @@ use lore_proto::lore::revision::v1::BranchMetadataSetRequest;
 use lore_proto::lore::revision::v1::BranchMetadataSetResponse;
 use lore_proto::lore::revision::v1::BranchPushRequest;
 use lore_proto::lore::revision::v1::BranchPushResponse;
+use lore_proto::lore::revision::v1::RevisionCreateRequest;
+use lore_proto::lore::revision::v1::RevisionCreateResponse;
 use lore_proto::lore::revision::v1::RevisionListRequest;
 use lore_proto::lore::revision::v1::RevisionListResponse;
 use lore_proto::lore::revision::v1::revision_service_server::RevisionService;
@@ -36,6 +38,8 @@ use super::branch_list;
 use super::branch_metadata_get;
 use super::branch_metadata_set;
 use super::branch_push;
+use super::revision_create;
+use super::revision_create::RevisionCreateLimits;
 use super::revision_list;
 use crate::grpc::forwarded_requests::ForwardedRequests;
 use crate::grpc::timeout_grpc;
@@ -78,6 +82,7 @@ pub struct LoreRevisionV1Service {
     rpc_timeout: Duration,
     instrument_provider: RevisionServiceInstrumentProvider,
     revision_list_instruments: RevisionListInstruments,
+    revision_create_limits: RevisionCreateLimits,
 }
 
 impl LoreRevisionV1Service {
@@ -91,6 +96,7 @@ impl LoreRevisionV1Service {
         acceleration: crate::grpc::server::RevisionListAcceleration,
         forwarded_requests: Option<Arc<dyn ForwardedRequests>>,
         rpc_timeout: Duration,
+        revision_create_limits: RevisionCreateLimits,
     ) -> Self {
         let instrument_provider = RevisionServiceInstrumentProvider;
         let seconds_in_one_day = 86400f64;
@@ -124,6 +130,7 @@ impl LoreRevisionV1Service {
             rpc_timeout,
             instrument_provider,
             revision_list_instruments,
+            revision_create_limits,
         }
     }
 
@@ -281,6 +288,27 @@ impl RevisionService for LoreRevisionV1Service {
                 self.history_step_size,
                 self.acceleration,
                 &self.revision_list_instruments,
+            ),
+        )
+        .await
+    }
+
+    async fn revision_create(
+        &self,
+        request: Request<RevisionCreateRequest>,
+    ) -> Result<Response<RevisionCreateResponse>, Status> {
+        timeout_grpc(
+            self.rpc_timeout,
+            revision_create::handler(
+                request,
+                self.immutable_store.clone(),
+                self.mutable_store.clone(),
+                self.notification.clone(),
+                &self.hook_dispatcher,
+                self.history_step_size,
+                self.acceleration,
+                self.revision_create_limits,
+                &self.instrument_provider,
             ),
         )
         .await

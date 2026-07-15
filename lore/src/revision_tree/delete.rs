@@ -4,25 +4,21 @@
 //! deleted within the handle's in-progress revision. Subsequent reads in the
 //! same handle do not observe the deleted subtree.
 
-use std::pin::Pin;
+#[cfg(test)]
 use std::sync::Arc;
 
-use lore_base::error::InvalidArguments;
-use lore_error_set::prelude::*;
 use lore_macro::LoreArgs;
-use lore_revision::errors::StateErrors;
-use lore_revision::event::EventError;
 use lore_revision::event::LoreErrorCode;
 use lore_revision::event::LoreEvent;
 use lore_revision::event::revision_tree::LoreRevisionTreeDeleteCompleteEventData;
-use lore_revision::interface::LoreError;
+#[cfg(test)]
 use lore_revision::node::NodeDelta;
+#[cfg(test)]
 use lore_revision::node::NodeFlags;
 use lore_revision::node::NodeID;
-use lore_revision::node::NodeIDExt;
-use lore_revision::node::SiblingCycleGuard;
+#[cfg(test)]
 use lore_revision::repository::RepositoryContext;
-use lore_revision::state;
+#[cfg(test)]
 use lore_revision::state::State;
 use serde::Deserialize;
 use serde::Serialize;
@@ -46,69 +42,12 @@ pub struct LoreRevisionTreeDeleteArgs {
     pub node_id: NodeID,
 }
 
-#[error_set]
-enum DeleteError {
-    InvalidArguments,
-}
-
-impl EventError for DeleteError {
-    fn translated(&self) -> LoreError {
-        match self {
-            DeleteError::InvalidArguments(_) => LoreError::InvalidArguments,
-            DeleteError::Internal(_) => LoreError::Internal,
-        }
-    }
-
-    fn inner(&self) -> String {
-        self.to_string()
-    }
-}
-
-fn invalid(reason: &str) -> DeleteError {
-    DeleteError::from(InvalidArguments {
-        reason: reason.into(),
-    })
-}
-
 fn emit_delete_complete(id: u64, error_code: LoreErrorCode) {
     LoreEvent::RevisionTreeDeleteComplete(LoreRevisionTreeDeleteCompleteEventData {
         id,
         error_code,
     })
     .send();
-}
-
-/// Mark the subtree StagedDelete, mirroring the stage path's recursive delete
-/// mark without its filesystem events and stats. The mark makes the recorded
-/// delta entries carry the delete action and propagates the base Staged bit
-/// up to the root so the commit rehash revisits every affected directory.
-/// Links do not recurse — their subtree lives in the link target's tree, not
-/// this one.
-fn mark_delete_subtree(
-    state: Arc<State>,
-    repository: Arc<RepositoryContext>,
-    node_id: NodeID,
-) -> Pin<Box<dyn Future<Output = Result<(), StateErrors>> + Send>> {
-    Box::pin(async move {
-        let node = state.node(repository.clone(), node_id).await?;
-        if node.is_staged_delete() {
-            return Ok(());
-        }
-        state
-            .node_mark(repository.clone(), node_id, NodeFlags::StagedDelete, true)
-            .await?;
-        if node.is_directory() {
-            let mut child_node_iter = node.child();
-            let mut cycle = SiblingCycleGuard::new(node_id);
-            while let Some(child_node_id) = child_node_iter {
-                mark_delete_subtree(state.clone(), repository.clone(), child_node_id).await?;
-                let child_node = state.node(repository.clone(), child_node_id).await?;
-                child_node.walk_step(child_node_id, node_id, &mut cycle)?;
-                child_node_iter = child_node.sibling();
-            }
-        }
-        Ok(())
-    })
 }
 
 /// Mark a node and its transitive children as deleted.
@@ -146,106 +85,28 @@ async fn delete_impl(
         },
         async move |internal, args: LoreRevisionTreeDeleteArgs| {
             let id = args.id;
-            let state = internal.state();
-            let fail = |reason: &str| {
-                emit_delete_complete(id, LoreErrorCode::InvalidArguments);
-                Err(invalid(reason))
-            };
-            let internal_error = |error: StateErrors, context: &str| {
-                emit_delete_complete(id, LoreErrorCode::Internal);
-                Err(DeleteError::internal_with_context(error, context))
-            };
-
-            if !args.node_id.is_valid_node_id() {
-                return fail("node id is invalid (the root cannot be deleted)");
-            }
-
-            let Ok(node) = state
-                .node(internal.repository_context.clone(), args.node_id)
-                .await
-            else {
-                return fail("node id is unknown");
-            };
-            // Every real node has a non-empty name, so a zero name hash means
-            // the id landed on an unallocated slot rather than a real node.
-            if node.name_hash == 0 {
-                return fail("node id does not resolve to a named node");
-            }
-            // A discarded slot keeps its name for history weaving; the node
-            // itself is gone (e.g. already deleted through this handle).
-            if node.is_discarded() {
-                return fail("node id resolves to a deleted node");
-            }
-
-            if let Err(error) = mark_delete_subtree(
-                state.clone(),
+            match lore_revision::revision_tree::delete_node(
+                internal.state(),
                 internal.repository_context.clone(),
                 args.node_id,
             )
             .await
             {
-                return internal_error(error, "mark delete subtree");
-            }
-
-            // Record each discarded node's delta entry on the handle — the
-            // discard drops the subtree from the child chains, so the
-            // commit's freeze walk can no longer observe these nodes.
-            let recorder = internal.clone();
-            let handler = move |discarded_node_id: NodeID, flags: u16| {
-                recorder
-                    .pending_delta
-                    .write()
-                    .push(NodeDelta::from_node_and_flags(discarded_node_id, flags));
-            };
-
-            // Children need no chain patching — the whole subtree goes. The
-            // target itself is patched out of its parent's child chain last,
-            // mirroring the commit discard order.
-            if node.is_directory() {
-                let mut child_node_iter = node.child();
-                let mut cycle = SiblingCycleGuard::new(args.node_id);
-                while let Some(child_node_id) = child_node_iter {
-                    let child_node = match state
-                        .node(internal.repository_context.clone(), child_node_id)
-                        .await
-                    {
-                        Ok(child_node) => child_node,
-                        Err(error) => return internal_error(error, "read child node"),
+                Ok(delta) => {
+                    internal.pending_delta.write().extend(delta);
+                    emit_delete_complete(id, LoreErrorCode::None);
+                    Ok(())
+                }
+                Err(error) => {
+                    let error_code = if error.is_invalid_arguments() {
+                        LoreErrorCode::InvalidArguments
+                    } else {
+                        LoreErrorCode::Internal
                     };
-                    if let Err(error) = child_node.walk_step(child_node_id, args.node_id, &mut cycle)
-                    {
-                        return internal_error(error, "walk child chain");
-                    }
-                    let next_sibling = child_node.sibling();
-                    if let Err(error) = state::node_discard_nopatch(
-                        state.clone(),
-                        internal.repository_context.clone(),
-                        child_node_id,
-                        true,
-                        true,
-                        handler.clone(),
-                    )
-                    .await
-                    {
-                        return internal_error(error, "discard subtree node");
-                    }
-                    child_node_iter = next_sibling;
+                    emit_delete_complete(id, error_code);
+                    Err(error)
                 }
             }
-
-            if let Err(error) = state::node_discard_patch(
-                state,
-                internal.repository_context.clone(),
-                args.node_id,
-                handler,
-            )
-            .await
-            {
-                return internal_error(error, "discard deleted node");
-            }
-
-            emit_delete_complete(id, LoreErrorCode::None);
-            Ok(())
         },
     )
     .await
@@ -353,7 +214,12 @@ mod tests {
             .clone()
     }
 
-    async fn add_node(handle: LoreRevisionTree, parent: NodeID, name: &str, is_file: bool) -> NodeID {
+    async fn add_node(
+        handle: LoreRevisionTree,
+        parent: NodeID,
+        name: &str,
+        is_file: bool,
+    ) -> NodeID {
         let (state, repository_context) = handle_state(handle);
         let node = Node {
             flags: if is_file { NodeFlags::File.bits() } else { 0 },
@@ -370,7 +236,11 @@ mod tests {
             .expect("node_add must succeed")
     }
 
-    async fn run_delete(handle: LoreRevisionTree, id: u64, node_id: NodeID) -> (i32, Vec<CapturedEvent>) {
+    async fn run_delete(
+        handle: LoreRevisionTree,
+        id: u64,
+        node_id: NodeID,
+    ) -> (i32, Vec<CapturedEvent>) {
         let sink: Arc<Mutex<Vec<CapturedEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let status = delete(
             LoreGlobalArgs::default(),
@@ -433,7 +303,10 @@ mod tests {
 
         let (status, events) = run_delete(handle, 2, dir_id).await;
 
-        assert_eq!(status, 0, "deleting a directory must succeed, got {events:?}");
+        assert_eq!(
+            status, 0,
+            "deleting a directory must succeed, got {events:?}"
+        );
         assert_eq!(delete_outcome(&events, 2), Some(LoreErrorCode::None));
 
         let (state, repository_context) = handle_state(handle);
@@ -446,7 +319,11 @@ mod tests {
         );
         assert_eq!(
             state
-                .find_subnode(repository_context.clone(), ROOT_NODE, hash_string("keep.md"))
+                .find_subnode(
+                    repository_context.clone(),
+                    ROOT_NODE,
+                    hash_string("keep.md")
+                )
                 .await
                 .expect("the sibling must survive"),
             keeper,

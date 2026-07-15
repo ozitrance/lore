@@ -130,6 +130,19 @@ pub struct FeatureSettings {
     /// holds an `Arc<State>` over a deserialised revision blob;
     /// the wall-clock benefit saturates well below 64.
     pub revision_diff_history_walk_concurrency: Option<usize>,
+    /// Optional operational quota for one raw `UploadContent` stream. The
+    /// streaming writer is memory-bounded without this cap; deployments set it
+    /// to control storage/bandwidth consumption. Enforced against bytes read,
+    /// not only the caller's declared size.
+    pub upload_content_max_bytes: Option<u64>,
+    /// RevisionCreate changeset limits. These bound the decoded request and
+    /// in-memory `State` retained until publication; they are independent of
+    /// the raw UploadContent file-size quota.
+    pub revision_create_max_request_bytes: Option<usize>,
+    pub revision_create_max_operations: Option<usize>,
+    pub revision_create_max_metadata_entries: Option<usize>,
+    pub revision_create_max_metadata_bytes: Option<usize>,
+    pub revision_create_max_path_bytes: Option<usize>,
 }
 
 /// Toggles for `RevisionList` acceleration features. Resolved once at
@@ -504,7 +517,8 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
             self.0.immutable_store.clone(),
             self.0.local_store.clone(),
             self.0.mutable_store.clone(),
-        );
+        )
+        .with_upload_content_max_bytes(self.0.feature.upload_content_max_bytes);
         let history_step_size = self
             .0
             .feature
@@ -530,6 +544,37 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
             acceleration,
             self.0.forwarded_requests.clone(),
             rpc_timeout,
+            {
+                let defaults =
+                    crate::grpc::revision::v1::revision_create::RevisionCreateLimits::default();
+                crate::grpc::revision::v1::revision_create::RevisionCreateLimits {
+                    max_request_bytes: self
+                        .0
+                        .feature
+                        .revision_create_max_request_bytes
+                        .unwrap_or(defaults.max_request_bytes),
+                    max_operations: self
+                        .0
+                        .feature
+                        .revision_create_max_operations
+                        .unwrap_or(defaults.max_operations),
+                    max_metadata_entries: self
+                        .0
+                        .feature
+                        .revision_create_max_metadata_entries
+                        .unwrap_or(defaults.max_metadata_entries),
+                    max_metadata_bytes: self
+                        .0
+                        .feature
+                        .revision_create_max_metadata_bytes
+                        .unwrap_or(defaults.max_metadata_bytes),
+                    max_path_bytes: self
+                        .0
+                        .feature
+                        .revision_create_max_path_bytes
+                        .unwrap_or(defaults.max_path_bytes),
+                }
+            },
         );
         let revision_diff_config = crate::grpc::thinclient::v1::revision_diff::RevisionDiffConfig {
             source_cap: self.0.feature.revision_diff_source_cap.unwrap_or(

@@ -1229,6 +1229,61 @@ pub async fn commit_tree(
         return Err(BranchAdvanced.into());
     }
 
+    let signature = construct_tree_revision(
+        repository.clone(),
+        token,
+        state.clone(),
+        pending_metadata,
+        branch,
+        deleted,
+    )
+    .await?;
+
+    if !globals.dry_run() {
+        branch::store_latest(
+            repository.clone(),
+            branch,
+            signature,
+            BranchLatestStatus::Divergent,
+        )
+        .await
+        .forward::<CommitError>("Failed to store current branch latest")?;
+    }
+
+    event::LoreEvent::RevisionCommitRevision(LoreRevisionCommitRevisionEventData {
+        repository: repository.id,
+        branch,
+        revision: signature,
+        revision_number: state.revision_number(),
+        parent: state.parent_self(),
+        parent_other: state.parent_other(),
+    })
+    .send();
+
+    Ok(signature)
+}
+
+/// Construct and serialize an immutable revision from an in-memory tree.
+///
+/// This performs the freeze, directory rehash, delta/history weave, metadata,
+/// and immutable state serialization portions of [`commit_tree`]. It never
+/// reads or updates branch latest. Server-side callers use this boundary to
+/// construct content-addressed state before the authoritative BranchPush
+/// protection, verification, hook, and compare-and-swap path publishes it.
+/// Unpublished revisions may remain unreachable when publication loses a
+/// race; that is safe content-addressed-storage behavior.
+pub async fn construct_tree_revision(
+    repository: Arc<RepositoryContext>,
+    token: &RepositoryWriteToken,
+    state: Arc<State>,
+    pending_metadata: Metadata,
+    branch: BranchId,
+    deleted: Vec<NodeDelta>,
+) -> Result<Hash, CommitError> {
+    let context = execution_context();
+    let globals = context.globals();
+    let parent_revision = state.revision();
+
     // An untouched handle has nothing to freeze: edits dirty the state and
     // deletes leave recorded entries, so a clean state with no carried
     // deletes is a no-op commit.
@@ -1347,17 +1402,6 @@ pub async fn commit_tree(
             .await
             .forward::<CommitError>("Failed to serialize revision state")?;
 
-        if !execution_context().globals().dry_run() {
-            branch::store_latest(
-                repository.clone(),
-                branch,
-                signature,
-                BranchLatestStatus::Divergent,
-            )
-            .await
-            .forward::<CommitError>("Failed to store current branch latest")?;
-        }
-
         Ok(signature)
     }
     .await;
@@ -1373,16 +1417,6 @@ pub async fn commit_tree(
         }
         Err(work_err) => return Err(work_err),
     };
-
-    event::LoreEvent::RevisionCommitRevision(LoreRevisionCommitRevisionEventData {
-        repository: repository.id,
-        branch,
-        revision: signature,
-        revision_number: state.revision_number(),
-        parent: state.parent_self(),
-        parent_other: state.parent_other(),
-    })
-    .send();
 
     Ok(signature)
 }

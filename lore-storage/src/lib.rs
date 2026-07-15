@@ -23,6 +23,7 @@ pub mod options;
 pub mod packstore;
 pub mod read;
 pub mod store_types;
+pub mod stream_write;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub(crate) mod typed_bytes;
@@ -129,6 +130,8 @@ pub use store_types::KeyValueStream;
 pub use store_types::StoreMatch;
 pub use store_types::StoreObliterateStats;
 pub use store_types::StoreQueryResult;
+pub use stream_write::ContentStreamError;
+pub use stream_write::write_content_stream;
 pub use typed_bytes::TypedBytes;
 pub use typed_bytes::TypedBytesMut;
 pub use types::Address;

@@ -63,9 +63,11 @@ its capi.
 - [x] `commit` verb — wraps `commit_tree` behind the revision-tree
       dispatcher: per-repository write token (no working-tree path to key
       on), write-capable sibling context, remote gating via
-      `set_disable_upload`, `BranchAdvanced` reported with the observed tip
-      on the terminal event, state swap + pending-buffer drain on success,
-      handle invalidation on failure (per the handle contract). 8 tests.
+      `set_disable_upload`, then `Revision::branch_push` when
+      `remote_write=1`; a lost response is reconciled with `branch_query`.
+      `BranchAdvanced` is reported with the observed local or remote tip on
+      the terminal event, followed by state swap + pending-buffer drain on
+      success and handle invalidation on failure (per the handle contract).
 - [x] Discarded-slot guards on the node-id entry points (`node_info`,
       `node_path`, `list_children` targets and the write verbs) — a
       discarded slot keeps its name for history weaving, so ids of deleted
@@ -80,7 +82,7 @@ its capi.
       integration suites) except `lore-revision/tests/quic.rs
       test_futures_size`, which fails identically on the pristine tree
       (verified via stash) — pre-existing, unrelated (it measures a
-      `lore-transport` future size; that crate is untouched).
+      `lore-transport` future size; that crate is untouched) - IGNORE this test.
 
 ## Design decisions (unresolved questions the proposal deferred)
 
@@ -117,3 +119,7 @@ its capi.
 - 2026-07-13 — Write verbs, `commit_tree`, capi wrappers, and tests landed.
   Full suite green (one pre-existing unrelated failure, see above);
   `lore-capi/lore.h` regenerated. 101 revision_tree unit tests total.
+- 2026-07-14 — Shared tree-edit primitives and construction-only commit split
+  landed for the gRPC implementation. `remote_write=1` now completes the
+  authoritative remote branch push and surfaces rejection on the commit
+  terminal event. See `GRPC-REVISION-TREE-PLAN.md` for the server flow.

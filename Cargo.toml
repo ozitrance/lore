@@ -65,7 +65,7 @@ enum_dispatch = "0.3.13"
 tracing-appender = "0.2.3"
 tracing-ecs = "0.4.1"
 tracing-opentelemetry = "0.32.0"
-fastcdc = "3.2.1"
+fastcdc = { version = "3.2.1", features = ["tokio"] }
 futures = "0.3.31"
 glob-match = "0.2.1"
 governor = "0.10.1"

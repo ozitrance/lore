@@ -4,21 +4,17 @@
 //! `address` while preserving its `file_id` (the `address.context` slot).
 //! Non-leaf targets are rejected with `LORE_ERROR_CODE_INVALID_ARGUMENTS`.
 
-use lore_base::error::InvalidArguments;
 use lore_base::types::Address;
-use lore_error_set::prelude::*;
 use lore_macro::LoreArgs;
-use lore_revision::event::EventError;
 use lore_revision::event::LoreErrorCode;
 use lore_revision::event::LoreEvent;
 use lore_revision::event::revision_tree::LoreRevisionTreeModifyCompleteEventData;
-use lore_revision::interface::LoreError;
 use lore_revision::node::INVALID_NODE;
+#[cfg(test)]
 use lore_revision::node::Node;
-use lore_revision::node::NodeBlock;
+#[cfg(test)]
 use lore_revision::node::NodeFlags;
 use lore_revision::node::NodeID;
-use lore_revision::node::NodeIDExt;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -45,30 +41,6 @@ pub struct LoreRevisionTreeModifyArgs {
     pub size: u64,
     /// New content address; the existing `file_id` context is preserved
     pub address: Address,
-}
-
-#[error_set]
-enum ModifyError {
-    InvalidArguments,
-}
-
-impl EventError for ModifyError {
-    fn translated(&self) -> LoreError {
-        match self {
-            ModifyError::InvalidArguments(_) => LoreError::InvalidArguments,
-            ModifyError::Internal(_) => LoreError::Internal,
-        }
-    }
-
-    fn inner(&self) -> String {
-        self.to_string()
-    }
-}
-
-fn invalid(reason: &str) -> ModifyError {
-    ModifyError::from(InvalidArguments {
-        reason: reason.into(),
-    })
 }
 
 fn emit_modify_complete(id: u64, node_id: NodeID, error_code: LoreErrorCode) {
@@ -117,81 +89,30 @@ async fn modify_impl(
         },
         async move |internal, args: LoreRevisionTreeModifyArgs| {
             let id = args.id;
-            let state = internal.state();
-            let fail = |reason: &str| {
-                emit_modify_complete(id, INVALID_NODE, LoreErrorCode::InvalidArguments);
-                Err(invalid(reason))
-            };
-
-            if !args.node_id.is_valid_node_id() {
-                return fail("node id is invalid");
-            }
-
-            let block_index = NodeBlock::index(args.node_id);
-            let node_index = Node::index(args.node_id);
-            let Ok(block) = state
-                .block(internal.repository_context.clone(), block_index)
-                .await
-            else {
-                return fail("node id is unknown");
-            };
-            let node = block.node(node_index);
-
-            // A discarded slot keeps its name for history weaving; the node
-            // itself is gone (e.g. deleted through this handle).
-            if node.is_discarded() {
-                return fail("node id resolves to a deleted node");
-            }
-            if !node.is_file() {
-                return fail("node is not a leaf (file) node");
-            }
-            // Every real node has a non-empty name, so a zero name hash means
-            // the id landed on an unallocated slot rather than a real node.
-            if node.name_hash == 0 {
-                return fail("node id does not resolve to a named node");
-            }
-            if !args.address.context.is_zero() && args.address.context != node.address.context {
-                return fail("address context does not match the node's file id");
-            }
-
-            let file_id = node.address.context;
-            let dirtied = {
-                let mut block_writer = block.write();
-                let node = block_writer.node(node_index);
-                node.address.hash = args.address.hash;
-                node.address.context = file_id;
-                node.mode = args.mode;
-                node.size = args.size;
-                block_writer.mark_dirty()
-            };
-            if dirtied {
-                state.block_modified(block.clone(), block_index);
-                state.mark_dirty();
-            }
-
-            // A node added in this handle stays an add — recording it as a
-            // modify would claim a parent-revision ancestor it never had
-            // (mirrors the staged-add handling in the stage path).
-            let mark_flags = if node.is_staged_add() {
-                NodeFlags::StagedAdd
-            } else {
-                NodeFlags::StagedModify
-            };
-            if let Err(error) = state
-                .node_mark(
-                    internal.repository_context.clone(),
-                    args.node_id,
-                    mark_flags,
-                    true,
-                )
-                .await
+            match lore_revision::revision_tree::modify_file(
+                internal.state(),
+                internal.repository_context.clone(),
+                args.node_id,
+                args.mode,
+                args.size,
+                args.address,
+            )
+            .await
             {
-                emit_modify_complete(id, INVALID_NODE, LoreErrorCode::Internal);
-                return Err(ModifyError::internal_with_context(error, "State::node_mark"));
+                Ok(node_id) => {
+                    emit_modify_complete(id, node_id, LoreErrorCode::None);
+                    Ok(())
+                }
+                Err(error) => {
+                    let error_code = if error.is_invalid_arguments() {
+                        LoreErrorCode::InvalidArguments
+                    } else {
+                        LoreErrorCode::Internal
+                    };
+                    emit_modify_complete(id, INVALID_NODE, error_code);
+                    Err(error)
+                }
             }
-
-            emit_modify_complete(id, args.node_id, LoreErrorCode::None);
-            Ok(())
         },
     )
     .await
@@ -292,7 +213,12 @@ mod tests {
     /// Add a node directly via `State::node_add` so modify has a target that
     /// is not marked staged-add (mirroring a node loaded from a parent
     /// revision). Returns the new node id.
-    async fn add_node(handle: LoreRevisionTree, name: &str, flags: u16, address: Address) -> NodeID {
+    async fn add_node(
+        handle: LoreRevisionTree,
+        name: &str,
+        flags: u16,
+        address: Address,
+    ) -> NodeID {
         let (state, repository_context) = handle_state(handle);
         let node = Node {
             flags,
@@ -429,7 +355,11 @@ mod tests {
         assert_eq!(status, 1, "a mismatched file id must fail");
         let events = sink.lock().unwrap().clone();
         let (_, error_code) = modify_outcome(&events, 3).expect("ModifyComplete must fire");
-        assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+        assert_eq!(
+            error_code,
+            LoreErrorCode::InvalidArguments,
+            "got {events:?}"
+        );
 
         release(handle, store_handle_id);
     }
@@ -438,7 +368,13 @@ mod tests {
     async fn modify_directory_or_link_returns_invalid_arguments() {
         let (handle, store_handle_id) =
             load_handle("modify-nonleaf", Partition::from([0x33u8; 16])).await;
-        let dir_id = add_node(handle, "docs", NodeFlags::NoFlags.bits(), Address::default()).await;
+        let dir_id = add_node(
+            handle,
+            "docs",
+            NodeFlags::NoFlags.bits(),
+            Address::default(),
+        )
+        .await;
         let link_id = add_node(
             handle,
             "link",
@@ -469,7 +405,11 @@ mod tests {
             let events = sink.lock().unwrap().clone();
             let (echoed, error_code) =
                 modify_outcome(&events, id).expect("ModifyComplete must fire");
-            assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+            assert_eq!(
+                error_code,
+                LoreErrorCode::InvalidArguments,
+                "got {events:?}"
+            );
             assert_eq!(echoed, INVALID_NODE);
         }
 
@@ -499,7 +439,11 @@ mod tests {
             assert_eq!(status, 1, "node id {node_id} must fail");
             let events = sink.lock().unwrap().clone();
             let (_, error_code) = modify_outcome(&events, id).expect("ModifyComplete must fire");
-            assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+            assert_eq!(
+                error_code,
+                LoreErrorCode::InvalidArguments,
+                "got {events:?}"
+            );
         }
 
         release(handle, store_handle_id);
@@ -526,7 +470,11 @@ mod tests {
         let events = sink.lock().unwrap().clone();
         let (node_id, error_code) = modify_outcome(&events, 9)
             .expect("a handle miss must still emit ModifyComplete carrying the caller id");
-        assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+        assert_eq!(
+            error_code,
+            LoreErrorCode::InvalidArguments,
+            "got {events:?}"
+        );
         assert_eq!(node_id, INVALID_NODE);
         assert!(events.contains(&CapturedEvent::Complete(1)));
     }

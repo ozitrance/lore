@@ -5,24 +5,18 @@
 //! read verbs emit (DIRECTORY=0, FILE=1, LINK=2); the verb rejects any
 //! other value with `LORE_ERROR_CODE_INVALID_ARGUMENTS`.
 
-use lore_base::error::InvalidArguments;
 use lore_base::types::Address;
-use lore_error_set::prelude::*;
 use lore_macro::LoreArgs;
-use lore_revision::event::EventError;
 use lore_revision::event::LoreErrorCode;
 use lore_revision::event::LoreEvent;
 use lore_revision::event::revision_tree::LoreRevisionTreeAddCompleteEventData;
-use lore_revision::interface::LoreError;
+#[cfg(test)]
 use lore_revision::interface::LoreNodeType;
 use lore_revision::interface::LoreString;
 use lore_revision::node::INVALID_NODE;
-use lore_revision::node::Node;
-use lore_revision::node::NodeFlags;
 use lore_revision::node::NodeID;
-use lore_revision::node::NodeIDExt;
+#[cfg(test)]
 use lore_revision::node::ROOT_NODE;
-use lore_storage::hash::hash_string;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -53,30 +47,6 @@ pub struct LoreRevisionTreeAddArgs {
     pub size: u64,
     /// Content address `(hash, file_id context)` of the new node
     pub address: Address,
-}
-
-#[error_set]
-enum AddError {
-    InvalidArguments,
-}
-
-impl EventError for AddError {
-    fn translated(&self) -> LoreError {
-        match self {
-            AddError::InvalidArguments(_) => LoreError::InvalidArguments,
-            AddError::Internal(_) => LoreError::Internal,
-        }
-    }
-
-    fn inner(&self) -> String {
-        self.to_string()
-    }
-}
-
-fn invalid(reason: &str) -> AddError {
-    AddError::from(InvalidArguments {
-        reason: reason.into(),
-    })
 }
 
 fn emit_add_complete(id: u64, node_id: NodeID, error_code: LoreErrorCode) {
@@ -132,152 +102,32 @@ async fn add_impl(
         },
         async move |internal, args: LoreRevisionTreeAddArgs| {
             let id = args.id;
-            let state = internal.state();
-            let fail = |reason: &str| {
-                emit_add_complete(id, INVALID_NODE, LoreErrorCode::InvalidArguments);
-                Err(invalid(reason))
-            };
-
-            if !args.parent_node_id.is_valid_or_root_node_id() {
-                return fail("parent node id is invalid");
-            }
-
-            let Ok(name) = std::str::from_utf8(args.name.as_bytes()) else {
-                return fail("name is not valid UTF-8");
-            };
-            if name.is_empty() {
-                return fail("name is empty");
-            }
-            if name.contains('/') || name.contains('\\') {
-                return fail("name must not contain path separators");
-            }
-
-            let flags = if args.kind == LoreNodeType::File as u32 {
-                NodeFlags::File
-            } else if args.kind == LoreNodeType::Directory as u32 {
-                NodeFlags::NoFlags
-            } else if args.kind == LoreNodeType::Link as u32 {
-                NodeFlags::Link
-            } else {
-                return fail("kind is not a valid node type");
-            };
-
-            // Reject at call time what commit would silently overwrite or
-            // could never resolve: a directory's hash and size are computed
-            // by the commit rehash, and a link with a zero target revision
-            // is dangling from birth.
-            if args.kind == LoreNodeType::Directory as u32
-                && (args.size != 0 || !args.address.hash.is_zero() || !args.address.context.is_zero())
+            match lore_revision::revision_tree::add_node(
+                internal.state(),
+                internal.repository_context.clone(),
+                args.parent_node_id,
+                args.name.as_bytes(),
+                args.kind,
+                args.mode,
+                args.size,
+                args.address,
+            )
+            .await
             {
-                return fail("a directory takes no size or address; both are computed at commit");
-            }
-            if args.kind == LoreNodeType::Link as u32 {
-                if args.size != 0 {
-                    return fail("a link takes no size");
+                Ok(node_id) => {
+                    emit_add_complete(id, node_id, LoreErrorCode::None);
+                    Ok(())
                 }
-                if args.address.hash.is_zero() {
-                    return fail("a link requires a target revision in address.hash");
-                }
-            }
-
-            let Ok(parent) = state
-                .node(internal.repository_context.clone(), args.parent_node_id)
-                .await
-            else {
-                return fail("parent node id is unknown");
-            };
-            // A discarded slot keeps its name for history weaving and reads
-            // back as a directory shape; the node itself is gone.
-            if parent.is_discarded() {
-                return fail("parent node id resolves to a deleted node");
-            }
-            if !parent.is_directory() {
-                return fail("parent node is not a directory in the handle's own tree");
-            }
-            // Every non-root node has a non-empty name, so an empty name means
-            // the id landed on an unallocated slot rather than a real node
-            // (consistent with `node_info`).
-            if args.parent_node_id != ROOT_NODE {
-                match state
-                    .node_name_clone(internal.repository_context.clone(), args.parent_node_id)
-                    .await
-                {
-                    Ok(parent_name) if parent_name.is_empty() => {
-                        return fail("parent node id does not resolve to a named node");
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        emit_add_complete(id, INVALID_NODE, LoreErrorCode::Internal);
-                        return Err(AddError::internal_with_context(
-                            error,
-                            "State::node_name_clone",
-                        ));
-                    }
-                }
-            }
-
-            let name_hash = hash_string(name);
-            match state
-                .find_subnode(
-                    internal.repository_context.clone(),
-                    args.parent_node_id,
-                    name_hash,
-                )
-                .await
-            {
-                Ok(_existing) => {
-                    return fail("name already exists under the parent");
-                }
-                Err(error) if error.is_node_not_found() => {}
                 Err(error) => {
-                    emit_add_complete(id, INVALID_NODE, LoreErrorCode::Internal);
-                    return Err(AddError::internal_with_context(error, "State::find_subnode"));
+                    let error_code = if error.is_invalid_arguments() {
+                        LoreErrorCode::InvalidArguments
+                    } else {
+                        LoreErrorCode::Internal
+                    };
+                    emit_add_complete(id, INVALID_NODE, error_code);
+                    Err(error)
                 }
             }
-
-            let node = Node {
-                flags: flags.bits(),
-                name_hash,
-                mode: args.mode,
-                size: args.size,
-                address: args.address,
-                // A link targets the linked tree's root; `child` doubles as
-                // the target node id on link nodes and ROOT_NODE is 0, so the
-                // default is correct for every kind.
-                ..Default::default()
-            };
-
-            let node_id = match state
-                .node_add(
-                    internal.repository_context.clone(),
-                    args.parent_node_id,
-                    node,
-                    name,
-                )
-                .await
-            {
-                Ok(node_id) => node_id,
-                Err(error) => {
-                    emit_add_complete(id, INVALID_NODE, LoreErrorCode::Internal);
-                    return Err(AddError::internal_with_context(error, "State::node_add"));
-                }
-            };
-
-            if let Err(error) = state
-                .node_mark(
-                    internal.repository_context.clone(),
-                    node_id,
-                    NodeFlags::StagedAdd,
-                    true,
-                )
-                .await
-            {
-                emit_add_complete(id, INVALID_NODE, LoreErrorCode::Internal);
-                return Err(AddError::internal_with_context(error, "State::node_mark"));
-            }
-
-            emit_add_complete(id, node_id, LoreErrorCode::None);
-            Ok(())
         },
     )
     .await
@@ -291,6 +141,7 @@ mod tests {
     use lore_base::types::Context;
     use lore_base::types::Hash;
     use lore_base::types::Partition;
+    use lore_revision::node::NodeIDExt;
 
     use super::*;
     use crate::revision_tree::handle as rt_handle;
@@ -379,11 +230,7 @@ mod tests {
         let sink: Arc<Mutex<Vec<CapturedEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let status = add(
             LoreGlobalArgs::default(),
-            LoreRevisionTreeAddArgs {
-                id,
-                handle,
-                ..args
-            },
+            LoreRevisionTreeAddArgs { id, handle, ..args },
             make_callback(sink.clone()),
         )
         .await;
@@ -405,7 +252,8 @@ mod tests {
 
     #[tokio::test]
     async fn add_file_under_root_returns_node_id_and_marks_staged_add() {
-        let (handle, store_handle_id) = load_handle("add-file", Partition::from([0x11u8; 16])).await;
+        let (handle, store_handle_id) =
+            load_handle("add-file", Partition::from([0x11u8; 16])).await;
         let address = Address {
             hash: Hash::from([0x42u8; 32]),
             context: Context::from([0x99u8; 16]),
@@ -481,14 +329,21 @@ mod tests {
             3,
             LoreRevisionTreeAddArgs {
                 parent_node_id: dir_id,
-                ..file_args("hello.md", 12, Address {
-                    hash: Hash::from([0x24u8; 32]),
-                    context: Context::from([0x77u8; 16]),
-                })
+                ..file_args(
+                    "hello.md",
+                    12,
+                    Address {
+                        hash: Hash::from([0x24u8; 32]),
+                        context: Context::from([0x77u8; 16]),
+                    },
+                )
             },
         )
         .await;
-        assert_eq!(status, 0, "adding a nested file must succeed, got {events:?}");
+        assert_eq!(
+            status, 0,
+            "adding a nested file must succeed, got {events:?}"
+        );
         let (file_id, error_code) = add_outcome(&events, 3).expect("AddComplete must fire");
         assert_eq!(error_code, LoreErrorCode::None);
 
@@ -502,7 +357,10 @@ mod tests {
             .node(repository_context.clone(), file_id)
             .await
             .expect("nested file must be readable");
-        assert_eq!(file_node.parent, dir_id, "file must nest under the directory");
+        assert_eq!(
+            file_node.parent, dir_id,
+            "file must nest under the directory"
+        );
         let dir_node = state
             .node(repository_context, dir_id)
             .await
@@ -529,7 +387,11 @@ mod tests {
         let (status, events) = run_add(handle, 5, file_args("doc.md", 1, address)).await;
         assert_eq!(status, 1, "a duplicate name must fail");
         let (node_id, error_code) = add_outcome(&events, 5).expect("AddComplete must fire");
-        assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+        assert_eq!(
+            error_code,
+            LoreErrorCode::InvalidArguments,
+            "got {events:?}"
+        );
         assert_eq!(node_id, INVALID_NODE);
         assert!(events.contains(&CapturedEvent::Complete(1)));
 
@@ -560,7 +422,10 @@ mod tests {
         assert_eq!(status, 1, "an empty name must fail, got {events:?}");
 
         let (status, events) = run_add(handle, 8, file_args("docs/doc.md", 1, address)).await;
-        assert_eq!(status, 1, "a separator in the name must fail, got {events:?}");
+        assert_eq!(
+            status, 1,
+            "a separator in the name must fail, got {events:?}"
+        );
 
         let (status, events) = run_add(
             handle,
@@ -610,7 +475,11 @@ mod tests {
         .await;
         assert_eq!(status, 1, "a file parent must fail");
         let (_, error_code) = add_outcome(&events, 12).expect("AddComplete must fire");
-        assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+        assert_eq!(
+            error_code,
+            LoreErrorCode::InvalidArguments,
+            "got {events:?}"
+        );
 
         release(handle, store_handle_id);
     }
@@ -633,7 +502,10 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(status, 1, "a directory with a size must fail, got {events:?}");
+        assert_eq!(
+            status, 1,
+            "a directory with a size must fail, got {events:?}"
+        );
 
         let (status, events) = run_add(
             handle,
@@ -680,7 +552,11 @@ mod tests {
         let events = sink.lock().unwrap().clone();
         let (node_id, error_code) = add_outcome(&events, 15)
             .expect("a handle miss must still emit AddComplete carrying the caller id");
-        assert_eq!(error_code, LoreErrorCode::InvalidArguments, "got {events:?}");
+        assert_eq!(
+            error_code,
+            LoreErrorCode::InvalidArguments,
+            "got {events:?}"
+        );
         assert_eq!(node_id, INVALID_NODE);
         assert!(events.contains(&CapturedEvent::Complete(1)));
     }

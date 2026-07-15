@@ -1,13 +1,37 @@
 # Running the Memory-Based Revision Workflows over the gRPC Contracts
 
-Research notes: what the wire surface and server backends already provide,
-what the new `lore_revision_tree_*` capabilities need from them, and what
-still has to be built to run the no-working-tree write workflow through
-gRPC. Companion to `PROGRESS.md` (the SDK-side implementation) and
+Implementation plan for the browser → Node server → Lore server flow: what
+the wire surface and server backends already provide, what the new
+`lore_revision_tree_*` capabilities need from them, and what still has to be
+built to run the no-working-tree write workflow through gRPC without buffering
+whole files in the Node layer. Companion to `PROGRESS.md` (the SDK-side implementation) and
 `docs/proposals/2026-05-14-low-level-revision-api.md` (which explicitly
 scoped gRPC out and anticipated this follow-on: *"The proposal does not
 preclude exposing a subset of these operations as RPCs later for genuinely
 remote callers; that is a separate LEP"*).
+
+## Implementation progress
+
+- [x] Prove nested empty directories survive commit and reload.
+- [x] Add shared `lore_revision::revision_tree` edit primitives for add,
+  exact directory creation, modify, delete, and move; keep the SDK verbs as
+  handle/event adapters. The SDK revision-tree suite passes (104 tests).
+- [x] Split immutable revision construction from branch publication.
+- [x] Add bounded streaming content ingestion and `UploadContent`.
+- [x] Add `RevisionCreate`, idempotency, limits, and shared authoritative
+  publication orchestration.
+- [x] Add server integration/end-to-end coverage and finish the contract docs.
+- [x] Add the independent SDK remote-push follow-through (G1).
+
+Implemented on 2026-07-14. The server test path now exercises
+`UploadContent` → `RevisionCreate` → `ThinClientService.RevisionTree`, including
+large multi-fragment input, top-level and nested empty directories,
+idempotent retries, ordered modify/move/delete, changeset and upload limits,
+tip conflicts, branch protection, and service-account bypass. Live
+AWS/S3-backed persistence remains deployment-specific validation; the same
+streaming writer targets the configured `ImmutableStore`, so the server sends
+bounded fragments directly to the Lore S3 backend without a Node staging
+file or bucket.
 
 ---
 
@@ -58,6 +82,13 @@ lives in the `lore` crate's verb bodies (`lore/src/revision_tree/*.rs`).
 the `lore` crate. Server handlers can call `commit_tree` today but cannot
 call the `lore` crate's revision_tree verbs.
 
+There is one additional boundary to fix before the server calls the commit
+pipeline: `commit_tree` currently serializes the revision **and writes the
+branch latest**. A server-side construct operation must not update the
+authoritative branch before `BranchPush` protection, fragment verification,
+hooks, notifications, and compare-and-swap run. The construction-only portion
+must therefore be extracted from `commit_tree`; see **G4**.
+
 ---
 
 ## 2. What already works end-to-end (thick-client path)
@@ -95,22 +126,43 @@ surface honors the same branch semantics") holds on this path because
 ## 3. What a pure thin client (no SDK) can and cannot do
 
 Can, today:
+
 - **Read everything** the workflows need: `ThinClientService.RevisionTree`
   (tree by revision, path-prefix + depth filters), `RevisionInfo`,
   `RevisionDiff`, `ContentDiff`, `StorageService.Get/GetMetadata` (bytes by
   address), `RevisionService.RevisionList` / `BranchGet` (by name!) /
   `BranchList`.
-- **Upload bytes**: `StorageService.Put` (hash-validated). Caveat: the
-  client must produce the fragment framing (`Fragment{flags, size_payload,
-  size_content}` + payload matching `hash_fragment`) — see **Q2**.
-- **Advance a tip to an existing revision**: `BranchPush`.
+- **Upload already-framed storage fragments** through `StorageService.Put`.
+  This RPC validates the supplied fragment metadata and payload hash, but it
+  is not a raw-file upload API: the caller must already understand Lore's
+  chunking, compression flags, hashes, fragment-reference lists, and recursive
+  fragment-list roots.
+- **Advance a tip to an existing revision** through `BranchPush`.
 
 Cannot, today:
-- **Construct a revision.** There is no RPC that turns "base revision +
-  a set of path-level operations + already-uploaded content addresses"
-  into a new revision. The merkle tree blocks, name tables, delta block,
-  history weave, and the revision record can only be produced by the SDK.
-  This is *the* gap between the wire surface and the new workflows.
+
+- **Stream an arbitrary file as raw bytes and receive a Lore address** without
+  either buffering the file into the SDK or implementing Lore's storage format
+  in the caller.
+- **Construct a revision.** There is no RPC that turns "base revision + a set
+  of path-level operations + already-uploaded content addresses" into a new
+  revision. The merkle tree blocks, name tables, delta block, history weave,
+  and revision record can only be produced by the SDK.
+
+The target thin-client flow is therefore two-phase:
+
+```text
+browser body ──stream──> Node ──UploadContent stream──> Lore ──> S3
+                                      │
+                                      └── Address + logical size
+
+Node ──RevisionCreate(address-backed operations)──> Lore
+                                      │
+                                      └── revision signature + number
+```
+
+Node is a backpressure-preserving proxy. It must not write temporary files or
+concatenate the request body into one buffer.
 
 ---
 
@@ -118,154 +170,331 @@ Cannot, today:
 
 ### G1 — SDK: remote tip advance from the revision_tree surface (small)
 
+**Implemented.** `remote_write=1` now publishes through the remote revision
+service after the local construction/upload. A lost push response is resolved
+by querying the remote branch: observing the new revision is success;
+observing a tip that moved from the expected base reports `BranchAdvanced`
+and carries that tip on the terminal event. Other server rejections remain
+commit failures. Remote publication failure invalidates the handle.
+
 `lore_revision_tree_commit(remote_write=1)` uploads all revision data but
-advances only the local tip. For a pipeline that targets a server, add the
-follow-through: after a successful commit with `remote_write`, call the
-remote's `Revision::branch_push` (available on the storage handle's
-connection) and surface the server's accept/reject on the commit terminal
-event — the plumbing mirrors what the FS `branch push` verb does. Design
-choice: fold into `commit` options (e.g. `remote_write` implies push, or a
-separate `remote_push` flag) — the LEP's remote-write contract language
-supports either.
+advances only the local tip. For an SDK pipeline that targets a server, add
+the follow-through: after a successful commit with `remote_write`, call the
+remote's `Revision::branch_push` and surface the server's accept/reject on the
+commit terminal event. This is useful for thick clients but is not on the
+critical path for the browser → Node → Lore flow.
 
-### G2 — Server: a revision-construction RPC (the main work)
+### G2 — Storage: raw streaming content upload
 
-A pure gRPC client needs the server to run the construct-and-commit logic on
-its behalf. Recommended shape (matches the sketch in `TaskInsights.md`):
+**Implemented.** `lore_storage::write_content_stream` uses async FastCDC and
+an incremental recursive fragment-list builder. The gRPC handler adapts the
+HTTP/2 stream directly to `AsyncRead`, and
+`feature.upload_content_max_bytes` optionally enforces actual bytes read
+(default: no file-size cap).
 
-**One atomic "apply changeset" RPC** rather than stateful 1:1 handle verbs.
-The LEP already rejected RPC-per-edit ("would pay an RPC round-trip per
-edit"), and a stateful server-side handle adds session lifetime problems
-for no benefit — a thin client's edit batch is known up front.
+Add a high-level client-streaming RPC to
+`lore.storage.v1.StorageService`. Keep the existing `Put` unchanged as the
+low-level fragment protocol.
 
 ```proto
-// strawman
+rpc UploadContent(stream UploadContentRequest)
+    returns (UploadContentResponse);
+
+message UploadContentRequest {
+  oneof part {
+    UploadContentHeader header = 1; // exactly once, first
+    bytes chunk = 2;
+  }
+}
+
+message UploadContentHeader {
+  // New file: UUIDv7 generated by the Node service. Modification: the
+  // existing node's address.context. Zero may ask Lore to mint one.
+  bytes file_id = 1;
+  optional uint64 expected_size = 2;
+  // Caller-generated UUIDv7 used to make an interrupted retry identifiable.
+  bytes request_id = 3;
+}
+
+message UploadContentResponse {
+  lore.model.v1.Address address = 1;
+  uint64 size = 2; // actual logical byte count observed by Lore
+}
+```
+
+Implement a streaming counterpart to `lore_storage::write_content`:
+
+1. Adapt the tonic message stream to `AsyncRead`.
+2. Feed it through `fastcdc::v2020::AsyncStreamCDC` using the same minimum,
+   expected, and maximum sizes as the current buffer writer.
+3. Hash/compress/store each bounded leaf through the existing
+   `store_fragment` path so all current validation, deduplication, remote
+   storage, and write tracking remain shared.
+4. Build fragment-reference lists incrementally. Flush a full list page to
+   storage and feed its reference into the next level instead of retaining one
+   reference for every file fragment until EOF. This keeps memory bounded for
+   very large files, including at the fragment-list levels.
+5. Verify `expected_size` when supplied and return the root address plus the
+   actual logical size.
+
+With the AWS immutable store configured, this path naturally writes Lore
+fragments to S3 and records Lore's DynamoDB metadata/associations. Do not add
+browser-presigned writes directly into the final Lore bucket in v1: an
+arbitrary S3 object is not a Lore fragment graph and bypasses hash validation
+and repository/context association. If bypassing Node/Lore bandwidth later
+becomes necessary, use a separate staging bucket plus a finalize/import RPC;
+do not expose the final Lore object layout to browsers.
+
+Keep bytes out of `RevisionCreate`, including for small files. A batched
+small-content upload can be added later if profiling shows per-file RPC
+overhead matters.
+
+### G3 — RevisionService: one atomic RevisionCreate RPC
+
+**Implemented.** The unary changeset handler validates and reserves the
+request id, derives file sizes from immutable metadata, applies operations in
+order, constructs without changing latest, and publishes through the shared
+authoritative BranchPush orchestration.
+
+Add one path-keyed changeset RPC rather than stateful 1:1 handle verbs. The
+client has one logical operation; the server still separates immutable
+revision construction from authoritative branch publication internally.
+
+```proto
 rpc RevisionCreate (RevisionCreateRequest) returns (RevisionCreateResponse);
 
 message RevisionCreateRequest {
-  bytes branch_id = 1;              // target branch
-  bytes base_revision_signature = 2; // client's view of the tip (0 = initial)
-  string commit_message = 3;
-  repeated lore.thin_client.v1.Metadata metadata = 4;
-  repeated Operation operations = 5;
+  bytes request_id = 1;              // caller-generated UUIDv7
+  bytes branch_id = 2;
+  bytes base_revision_signature = 3; // caller's observed tip; zero = initial
+  string commit_message = 4;
+  repeated MetadataEntry metadata = 5;
+  repeated Operation operations = 6;
+}
 
-  message Operation {
-    oneof op {
-      Put put = 1;        // path, kind, mode, size, address (from StorageService.Put)
-      Delete delete = 2;  // path
-      Move move = 3;      // from_path, to_path
-    }
+message MetadataEntry {
+  string key = 1;
+  bytes value = 2;
+  uint32 format = 3; // validated against Lore's supported metadata formats
+}
+
+message Operation {
+  oneof op {
+    PutFile put_file = 1;
+    CreateDirectory create_directory = 2;
+    DeletePath delete_path = 3;
+    MovePath move_path = 4;
   }
 }
+
+message PutFile {
+  string path = 1;
+  uint32 mode = 2;
+  lore.model.v1.Address address = 3;
+  // No caller-supplied size: derive it from stored fragment metadata.
+}
+
+message CreateDirectory {
+  string path = 1;
+  uint32 mode = 2;
+}
+
+message DeletePath { string path = 1; }
+message MovePath { string source = 1; string destination = 2; }
+
 message RevisionCreateResponse {
   bytes revision_signature = 1;
   uint64 revision_number = 2;
 }
 ```
 
-Semantics: path-keyed (thin clients think in paths; the server resolves to
-node ids internally), all-or-nothing, tip-collision against
-`base_revision_signature` → `FailedPrecondition` embedding the current
-latest (byte-for-byte the `BranchPush` contract), then the same
-protection/hook/notification pipeline as `BranchPush`.
+Server semantics:
 
-Server handler skeleton (all ingredients exist):
-`RepositoryContext::new_server_context` + server write token (the pattern in
-`grpc/handlers/branch_push.rs` and its tests) → `State::deserialize(base)` →
-apply operations → `lore_revision::commit::commit_tree(...)` → reuse
-`handlers/branch_push::push()` for the authoritative tip advance (or advance
-directly, since commit_tree + the base check already performed the CAS
-under the server's storage locks — decide in design).
+1. Validate request byte/count limits, ids, paths, operation shapes, and
+   idempotency key before loading a tree.
+2. Confirm the authoritative branch tip equals
+   `base_revision_signature`; return `FailedPrecondition` with the current tip
+   on a mismatch.
+3. Build a pathless `RepositoryContext`, deserialize the explicit base, and
+   apply operations in request order through the shared edit primitives.
+4. Batch-load `PutFile` address metadata, require every address to exist in
+   the repository/context, derive each logical size server-side, and preserve
+   an existing file's file id on modification.
+5. Construct and serialize the new revision into immutable CAS **without
+   changing the branch latest**.
+6. Publish it through the same protection, hook, fragment-verification,
+   notification, history-acceleration, and branch compare-and-swap path as
+   `BranchPush`.
+7. Return the published revision signature and number. A final CAS race is a
+   `FailedPrecondition` carrying the newly observed tip.
 
-### G3 — Code movement: extract the edit primitives into `lore-revision`
+Do not expose `force` or `fast_forward_merge` on `RevisionCreate` v1. A stale
+web edit must fail explicitly so the Node application can reload and decide
+how to reconcile it.
 
-Because `lore-server` cannot depend on the `lore` crate, the verb-level edit
-logic the G2 handler needs (validated add/modify/delete/move with staged
-marking, discard, and delta recording — currently inline in
-`lore/src/revision_tree/{add,modify,delete,move_node}.rs`) should move into
-a `lore-revision` module (e.g. `lore_revision::revision_tree`), leaving the
-`lore` crate verbs as thin wrappers that do event emission and handle
-plumbing. `commit_tree` already made this move; this completes it. Benefit:
-one implementation of the malformed-edit rejections (duplicate names,
-cycles, discarded slots) shared by SDK and server — the LEP's "server
-validates pushed revisions" story stays single-sourced.
+The branch update is the atomic visibility point. Immutable content and a
+constructed revision may remain unreachable after cancellation or a CAS
+loss; that is acceptable content-addressed-storage behavior and can be handled
+by retention/garbage collection rather than rollback.
 
-### G4 — Service placement decision
+Use `request_id` for a real idempotency record keyed by repository + branch +
+request id. A retry with the same request digest returns the original result;
+reusing the id for different content is rejected. Deterministic addresses
+alone are not enough because a lost successful response leaves the branch
+already advanced past the request's base.
 
-Where should `RevisionCreate` live?
+### G4 — Code movement and the construction/publication split
 
-| Option | For | Against |
-|---|---|---|
-| `lore.revision.v1.RevisionService` (**recommended**) | It is a revision-graph *write*, and this service already owns the only other graph write (`BranchPush`) with all the auth/protection/hook plumbing; the charter "graph primitives" fits a commit primitive. | Grows the "minimal, stable" service. |
-| `lore.thin_client.v1.ThinClientService` | Charter is literally "compute on behalf of clients that lack it", which describes server-side tree construction. | Service is read-only today; mixing presentation reads with an authoritative write muddies both charters. |
-| New `lore.revision_tree.v1` service | Clean slate, mirrors the SDK namespace. | A one-RPC service; more registration/interceptor surface for little gain — can still split later, additively. |
+**Implemented.** Shared edits live in `lore-revision`; SDK verbs retain their
+event/handle adapters. `construct_tree_revision` and the shared server
+`publish_revision` boundary prevent pre-publication tip changes.
 
-Recommendation: `RevisionService.RevisionCreate`, keeping thin_client
-read-only. Revisit only if the operation list grows presentation-flavored
-options.
+Because `lore-server` cannot depend on the `lore` crate, move the validated
+tree-edit logic currently inline in
+`lore/src/revision_tree/{add,modify,delete,move_node}.rs` into a
+`lore_revision::revision_tree` module. Include the directory-create primitive
+described in **G5**. Leave the `lore` verbs as event/handle wrappers around
+those shared operations.
 
-### G5 — Repository bootstrap for the no-clone flow
+Also split the current commit pipeline:
 
-Creating a repo + default branch remotely already works
-(`RepositoryService.RepositoryCreate`), and `BranchGet(name)` resolves
-branch names to ids. Nothing to build; just confirm the web layer uses ids
-after one resolve.
+- `construct_tree_revision(...)`: freeze edits, rehash directories, create the
+  delta/history/metadata, and serialize the immutable revision; never load or
+  update branch latest.
+- `commit_tree(...)`: the SDK wrapper that performs its existing local
+  tip-collision check, calls `construct_tree_revision`, and advances the local
+  branch tip.
+- A shared server publication orchestration used by both `BranchPush` and
+  `RevisionCreate`: protection, pre-hook, fragment verification, CAS,
+  notification, post-hook, and response hooks.
 
-### G6 — Tests and contract docs
+Do **not** implement the server path as current `commit_tree` followed by
+`handlers::branch_push::push()`. Today `commit_tree` writes latest first;
+`push()` can then take its "already current" early return before verifying new
+fragments. `RevisionCreate` also must not call only the low-level `push()`
+helper and accidentally skip the hooks/notifications owned by the handler.
 
-- Server: handler tests mirroring `branch_push.rs`'s suite (tip collision,
-  protection, service-account bypass, hooks, idempotent retry, deleted
-  branch), plus construct-specific cases (duplicate path ops, unknown base,
-  address not in CAS → the `verify_fragments` path, empty operation list).
-- End-to-end: an integration test driving `StorageService.Put` →
-  `RevisionCreate` → `ThinClientService.RevisionTree` /
-  `RevisionService.RevisionList` to verify the committed tree round-trips.
-- Proto docs: the new RPC needs the same in-proto contract prose style as
-  `BranchPush` (soft-rejection semantics, idempotency).
+### G5 — Explicit empty-directory support
+
+**Implemented.** Exact directory creation is shared by SDK and server paths,
+with commit/reload and thin-client tree coverage for top-level and nested
+empty directories.
+
+Empty directories are a v1 operation, not a deferred extension.
+
+Current SDK status:
+
+- `lore_revision_tree_add(kind = DIRECTORY)` already accepts an empty
+  directory with `size = 0` and a zero address, calls `State::node_add`, and
+  marks it `StagedAdd`.
+- `commit_tree_freeze` records staged directories and `rehash_directory`
+  computes the empty-directory hash/size and clears the staged bits.
+- Read operations already represent an empty directory as a directory with no
+  child events.
+
+What is still required:
+
+- Extract/add a server-callable `create_directory(state, parent, name, mode)`
+  primitive in `lore-revision` and expose it as the path-keyed
+  `CreateDirectory` operation.
+- Define it as exact creation, not implicit `mkdir -p`: the parent must exist
+  and be a directory; an occupied target path is rejected. Operations are
+  ordered, so callers create missing ancestors explicitly first.
+- Add a focused SDK commit/reload test proving a newly added empty directory
+  survives revision serialization. The existing add tests prove the
+  in-memory mutation but do not currently cover commit + reload for an empty
+  directory.
+- Add server tests for a root empty directory, nested empty directory,
+  directory beside files, missing parent, occupied path, move, and delete.
+  The end-to-end test must confirm `ThinClientService.RevisionTree` emits the
+  empty directory after `RevisionCreate`.
+
+### G6 — Service placement
+
+`RevisionCreate` belongs in `lore.revision.v1.RevisionService`: it is an
+authoritative revision-graph write and shares the `BranchPush` publication
+gate. Keep `ThinClientService` read-only. `UploadContent` belongs in
+`lore.storage.v1.StorageService` because it turns bytes into a content address
+without revision semantics. No new one-RPC services are needed.
+
+### G7 — Repository bootstrap for the no-clone flow
+
+Creating a repository and default branch remotely already works through
+`RepositoryService.RepositoryCreate`, and `BranchGet(name)` resolves branch
+names to ids. No new RPC is required; the Node layer should resolve once and
+use ids for upload/create calls.
+
+### G8 — Tests and contract documentation
+
+**Implemented for the in-memory/local-store server suite.** Live S3-backed
+verification is intentionally left to an environment with the configured AWS
+backend and credentials.
+
+- Storage unit/integration tests: empty content, below/at/above fragment
+  threshold, many chunks, recursive fragment-list levels, cancellation,
+  declared-size mismatch, retry with the same file id/request id, bounded
+  memory/backpressure, and AWS-backed persistence where available.
+- Revision handler tests mirroring `branch_push.rs`: tip collision, protected
+  branch, service-account bypass, hooks, notifications, idempotent retry,
+  deleted branch, and a CAS race after construction.
+- Construct-specific tests: every operation kind, duplicate/conflicting paths,
+  unknown base, address absent from CAS, context/file-id mismatch, server-side
+  size derivation, empty operation list, and the empty-directory cases in G5.
+- End-to-end: `UploadContent` → `RevisionCreate` →
+  `ThinClientService.RevisionTree` / `RevisionService.RevisionList`, including
+  at least one large streamed file and one empty directory.
+- Proto documentation: first-message upload header rules, cancellation and
+  orphan behavior, size/count limits, idempotency, conflict details, and the
+  exact branch-publication semantics.
 
 ---
 
-## 5. Open questions to settle in the RPC design
+## 5. Settled design decisions
 
-- **Q1 — File ids for new files.** The SDK add verb takes the caller's
-  `address.context` verbatim. For thin clients, decide: require a
-  client-generated UUIDv7 context (matches the storage.Put they already
-  did), or let the server mint one when zero (the `commit_file` precedent).
-  Leaning: require it — the address must match what was Put.
-- **Q2 — Fragment framing for thin uploaders.** `StorageService.Put`
-  expects `hash_fragment(fragment, payload)`-consistent framing; a browser
-  client would prefer "raw bytes, flags=0". Document the minimal raw-frame
-  recipe, and consider whether `RevisionCreate` should optionally accept
-  small inline payloads to spare tiny edits the CAS round-trip (ergonomics
-  vs. keeping structure/bytes separation — the LEP's split argues for
-  keeping them separate).
-- **Q3 — Tip advance inside RevisionCreate vs. explicit BranchPush.**
-  Atomic construct+advance (one RPC, matches TaskInsights' web-API sketch)
-  vs. construct-only returning the signature and letting the client call
-  `BranchPush` (composability, reuses the exact existing gate). Leaning:
-  atomic, with the handler internally reusing the `push()` helper — a web
-  endpoint wants one conflict-checked call.
-- **Q4 — Operation vocabulary v1.** `put/delete/move` covers the importer,
-  mirror, and build-ingest use cases. Explicit `mkdir` (empty directory)
-  and link operations can be additive later; the SDK supports them if we
-  choose to expose them day one.
-- **Q5 — Limits.** Max operations per request, max metadata entries, and
-  whether a very large changeset should become a client-streamed request
-  (`stream RevisionCreateRequest` with a terminating commit message) —
-  server memory for the in-flight State scales with edits (LEP's stated
-  risk), so a cap + documented batching guidance is probably enough for v1.
+- **Q1 — File ids.** The Node service generates UUIDv7 for new files and
+  reuses the existing `address.context` for modifications. The upload header
+  carries that id; Lore may mint one only when omitted. The browser does not
+  implement Lore identity rules.
+- **Q2 — Upload framing.** Add `StorageService.UploadContent`; browser/Node
+  callers stream raw bytes and Lore owns fragmentation. Keep bytes, including
+  tiny inline payloads, out of `RevisionCreate` v1.
+- **Q3 — Tip advance.** `RevisionCreate` is one construct-and-publish RPC to
+  the caller, but internally immutable construction and authoritative branch
+  publication are separate. The final shared BranchPush CAS is the visibility
+  point.
+- **Q4 — Operations.** V1 includes `PutFile`, `CreateDirectory`, `DeletePath`,
+  and `MovePath`. Empty-directory creation is required now; links remain
+  additive follow-up work.
+- **Q5 — Limits.** `RevisionCreate` limits are changeset limits: encoded
+  request bytes, operation count, metadata count/bytes, and path sizes. Keep it
+  unary; streaming operations would bypass the protobuf envelope limit but
+  would not bound the mutated `State` retained until publication. Configure a
+  cap and return `ResourceExhausted` with the applicable limit.
+- **Upload size limits.** File size is independent of `RevisionCreate`. A
+  correct streaming writer does not need a small file-size cap for memory
+  safety, but a browser-facing deployment still needs configurable per-upload,
+  per-user/repository quota, concurrency, bandwidth, deadline, and idle limits.
+  Enforce total bytes incrementally; do not trust only the declared size or
+  HTTP `Content-Length`.
+- **S3.** S3 is the durable backend behind Lore, not a temporary Node handoff
+  and not a final bucket browsers write into directly. A staging-bucket import
+  flow is a later bandwidth optimization if measurements justify it.
 
 ---
 
 ## 6. Suggested order of work
 
-1. **G3** — move the tree-edit primitives into `lore-revision` (pure
-   refactor, keeps SDK tests green; unblocks the server handler).
-2. **G2 + G4** — proto for `RevisionService.RevisionCreate`, server handler
-   on the branch_push plumbing, hash/fragment validation via existing
-   paths.
-3. **G1** — SDK follow-through: remote tip advance from
-   `lore_revision_tree_commit` (independent of 1–2; do in parallel if the
-   thick-client path is wanted sooner).
-4. **G6** — handler + end-to-end tests, proto contract docs.
-5. Revisit **Q2/Q5** ergonomics once a real web client exercises the flow.
+1. **G4 + G5** — extract the shared edit primitives, add exact empty-directory
+   creation, add commit/reload coverage, and split immutable construction from
+   branch publication while keeping the SDK tests green.
+2. **G2 storage core** — implement the bounded streaming content writer and
+   incremental recursive fragment-list builder in `lore-storage`.
+3. **G2 + G3 protos/services** — add `StorageService.UploadContent` and
+   `RevisionService.RevisionCreate`, generated bindings, registration, and
+   configuration limits.
+4. **G3 server handler** — apply address-backed operations, construct without
+   advancing latest, and publish through the shared BranchPush orchestration.
+5. **G8** — complete handler, cancellation, conflict, empty-directory, large
+   upload, and end-to-end tests plus proto/contract documentation.
+6. **G1** — add SDK remote-push follow-through independently or in parallel if
+   the thick-client path is also needed.

@@ -47,6 +47,7 @@ pub mod protocol;
 pub mod relay;
 pub mod repository;
 pub mod revision;
+pub mod revision_tree;
 pub mod runtime;
 pub mod stage;
 pub mod state;
