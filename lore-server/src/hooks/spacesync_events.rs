@@ -32,8 +32,8 @@ insert into spacesync_events (
     source,
     event_key,
     event_type,
-    repository_id,
-    branch_id,
+    space_id,
+    universe_id,
     revision_signature,
     revision_number,
     user_id,
@@ -113,8 +113,8 @@ struct EventRecord {
     id: Uuid,
     event_key: String,
     event_type: String,
-    repository_id: Vec<u8>,
-    branch_id: Option<Vec<u8>>,
+    space_id: Vec<u8>,
+    universe_id: Option<Vec<u8>>,
     revision_signature: Option<Vec<u8>>,
     revision_number: Option<i64>,
     user_id: Option<Uuid>,
@@ -124,8 +124,8 @@ struct EventRecord {
 
 impl EventRecord {
     fn from_context(phase: &'static str, ctx: &HookContext) -> Self {
-        let repository_id = ctx.repository().as_ref().to_vec();
-        let branch_id = ctx.branch().map(|branch| branch.as_ref().to_vec());
+        let space_id = ctx.repository().as_ref().to_vec();
+        let universe_id = ctx.branch().map(|branch| branch.as_ref().to_vec());
         let revision_signature = ctx.revision().map(|revision| revision.as_ref().to_vec());
         let revision_number = ctx
             .revision_number()
@@ -148,8 +148,8 @@ impl EventRecord {
             .collect();
         let event_key = event_key(
             &event_type,
-            &repository_id,
-            branch_id.as_deref(),
+            &space_id,
+            universe_id.as_deref(),
             revision_signature.as_deref(),
             revision_number,
             raw_user_id.as_deref(),
@@ -159,8 +159,8 @@ impl EventRecord {
         let payload = payload_json(
             phase,
             &hook_point,
-            &repository_id,
-            branch_id.as_deref(),
+            &space_id,
+            universe_id.as_deref(),
             revision_signature.as_deref(),
             revision_number,
             user_id.as_ref(),
@@ -174,8 +174,8 @@ impl EventRecord {
             id: Uuid::now_v7(),
             event_key,
             event_type,
-            repository_id,
-            branch_id,
+            space_id,
+            universe_id,
             revision_signature,
             revision_number,
             user_id,
@@ -198,8 +198,8 @@ fn non_empty(value: Option<&str>) -> Option<String> {
 
 fn event_key(
     event_type: &str,
-    repository_id: &[u8],
-    branch_id: Option<&[u8]>,
+    space_id: &[u8],
+    universe_id: Option<&[u8]>,
     revision_signature: Option<&[u8]>,
     revision_number: Option<i64>,
     user_id: Option<&str>,
@@ -209,8 +209,8 @@ fn event_key(
     let mut hasher = blake3::Hasher::new();
     update_str(&mut hasher, "source", SOURCE);
     update_str(&mut hasher, "event_type", event_type);
-    update_bytes(&mut hasher, "repository_id", repository_id);
-    update_optional_bytes(&mut hasher, "branch_id", branch_id);
+    update_bytes(&mut hasher, "space_id", space_id);
+    update_optional_bytes(&mut hasher, "universe_id", universe_id);
     update_optional_bytes(&mut hasher, "revision_signature", revision_signature);
     update_optional_i64(&mut hasher, "revision_number", revision_number);
     update_optional_str(&mut hasher, "user_id", user_id);
@@ -259,8 +259,8 @@ fn update_bytes(hasher: &mut blake3::Hasher, field: &str, value: &[u8]) {
 fn payload_json(
     phase: &str,
     hook_point: &str,
-    repository_id: &[u8],
-    branch_id: Option<&[u8]>,
+    space_id: &[u8],
+    universe_id: Option<&[u8]>,
     revision_signature: Option<&[u8]>,
     revision_number: Option<i64>,
     user_id: Option<&Uuid>,
@@ -275,8 +275,8 @@ fn payload_json(
         "hook_name": HOOK_NAME,
         "phase": phase,
         "hook_point": hook_point,
-        "repository_id": hex::encode(repository_id),
-        "branch_id": branch_id.map(hex::encode),
+        "space_id": hex::encode(space_id),
+        "universe_id": universe_id.map(hex::encode),
         "revision_signature": revision_signature.map(hex::encode),
         "revision_number": revision_number,
         "user_id": user_id,
@@ -352,8 +352,8 @@ fn insert_event(client: &mut Client, event: &EventRecord) -> Result<u64, postgre
             &SOURCE,
             &event.event_key,
             &event.event_type,
-            &event.repository_id,
-            &event.branch_id,
+            &event.space_id,
+            &event.universe_id,
             &event.revision_signature,
             &event.revision_number,
             &event.user_id,
