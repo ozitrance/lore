@@ -2451,7 +2451,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lore"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "anyhow",
  "bitcode",
@@ -2487,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "lore-aws"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "lore-base"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "anyhow",
  "backtrace",
@@ -2558,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "lore-chaos-client"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "anyhow",
  "clap",
@@ -2575,7 +2575,7 @@ dependencies = [
 
 [[package]]
 name = "lore-client"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2602,7 +2602,7 @@ dependencies = [
 
 [[package]]
 name = "lore-credential"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -2640,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "lore-hashicorp"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "async-trait",
  "lore-base",
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "lore-macro"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "quote",
  "syn",
@@ -2703,7 +2703,7 @@ dependencies = [
 
 [[package]]
 name = "lore-notification"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "async-trait",
  "lore-base",
@@ -2731,7 +2731,7 @@ dependencies = [
 
 [[package]]
 name = "lore-revision"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2793,7 +2793,7 @@ dependencies = [
 
 [[package]]
 name = "lore-server"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "lore-storage"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "async-trait",
  "bitflags",
@@ -2910,7 +2910,7 @@ dependencies = [
 
 [[package]]
 name = "lore-telemetry"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "axum",
  "http 1.4.0",
@@ -2932,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "lore-transport"
-version = "0.8.5-nightly"
+version = "0.8.6-nightly"
 dependencies = [
  "async-stream",
  "async-trait",
