@@ -59,6 +59,7 @@ use crate::grpc::thinclient::LoreThinClientV1Service;
 use crate::grpc::tower::grpc_response_trace::GrpcResponseTraceLayer;
 use crate::grpc::tower::tracing::LoreTracingLayer;
 use crate::hooks::HookDispatcher;
+use crate::http::server::PresignConfig;
 use crate::legacy::rpc::environment_service_server::EnvironmentServiceServer;
 use crate::legacy::rpc::repository_service_server::RepositoryServiceServer;
 use crate::legacy::rpc::revision_service_server::RevisionServiceServer;
@@ -448,6 +449,7 @@ impl GrpcServerBuilder<WantsHttp2Config> {
         service_settings: Option<GrpcPublicServicesSettings>,
         user_agent_filter: Arc<UserAgentFilter>,
         forwarded_requests: Option<Arc<dyn ForwardedRequests>>,
+        presign_config: Option<PresignConfig>,
     ) -> GrpcServerBuilder<MaybeJwtVerifier> {
         GrpcServerBuilder(MaybeJwtVerifier {
             environment: self.0.environment,
@@ -467,6 +469,7 @@ impl GrpcServerBuilder<WantsHttp2Config> {
             service_settings,
             user_agent_filter,
             forwarded_requests,
+            presign_config,
         })
     }
 }
@@ -489,6 +492,7 @@ pub struct MaybeJwtVerifier {
     service_settings: Option<GrpcPublicServicesSettings>,
     user_agent_filter: Arc<UserAgentFilter>,
     forwarded_requests: Option<Arc<dyn ForwardedRequests>>,
+    presign_config: Option<PresignConfig>,
 }
 
 impl GrpcServerBuilder<MaybeJwtVerifier> {
@@ -587,6 +591,7 @@ impl GrpcServerBuilder<MaybeJwtVerifier> {
             self.0.mutable_store.clone(),
             rpc_timeout,
             revision_diff_config,
+            self.0.presign_config,
         );
         let repository_svc = LoreRepositoryService::new(
             self.0.environment.clone(),

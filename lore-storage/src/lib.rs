@@ -122,6 +122,7 @@ pub use read::read_into;
 pub use read::read_into_file;
 pub use read::read_raw;
 pub use read::read_stream;
+pub use read::read_stream_range;
 pub use read::remote_fetch_inflight;
 pub use read::write_all_to_file;
 // Re-export store types

@@ -22,6 +22,10 @@ remote callers; that is a separate LEP"*).
   publication orchestration.
 - [x] Add server integration/end-to-end coverage and finish the contract docs.
 - [x] Add the independent SDK remote-push follow-through (G1).
+- [x] Add revision/path file downloads for thin clients: exact path
+  resolution, pinned revision metadata, short-lived logical Lore URLs,
+  bounded defragmentation streaming, propagated mid-stream errors, empty-file
+  handling, and single-range HTTP resume support.
 
 Implemented on 2026-07-14. The server test path now exercises
 `UploadContent` → `RevisionCreate` → `ThinClientService.RevisionTree`, including
@@ -32,6 +36,43 @@ AWS/S3-backed persistence remains deployment-specific validation; the same
 streaming writer targets the configured `ImmutableStore`, so the server sends
 bounded fragments directly to the Lore S3 backend without a Node staging
 file or bucket.
+
+The revision/path download extension below was implemented on 2026-07-15.
+
+The read-side browser flow is now implemented as
+`ThinClientService.RevisionFileDownload`:
+
+```text
+browser ──repo/revision/path──> Node
+Node ──RevisionFileDownload──> Lore gRPC
+Node <──pinned revision + URL suffix── Lore
+browser ──signed GET/Range──> Lore HTTP ──bounded fragment reads──> store
+```
+
+The RPC resolves `identifier` (including `number = 0` tip queries) or
+`signature` to a concrete revision, follows the exact file path through
+authorized repository links, verifies the file's full repository/context
+association and logical size, and returns the resolved repository, address,
+size, mode, filename, expiry, and `/v1/presigned/...` URL suffix. The Node
+server can return that URL or issue a redirect after joining it to the public
+Lore HTTP origin.
+
+The signed URL streams the logical file through Lore rather than exposing raw
+S3 fragment objects. It supports `Range: bytes=...`, `206`, `416`,
+`Content-Range`, `Accept-Ranges`, `If-Range`, and an immutable address-based
+`ETag`.
+Fragment-list walks skip non-overlapping leaf payloads and slice boundary
+leaves, so ranged downloads remain bounded. Stream items now carry errors;
+missing or corrupt fragments terminate the HTTP body with an error instead of
+being logged as a successful short response. Zero-address, zero-length files
+return an empty body without a store read.
+
+This feature requires the Lore HTTP endpoint and
+`presigned_url_hmac_key`; when they are unavailable the gRPC operation returns
+`FailedPrecondition`. There is deliberately no materialized S3 download cache
+and no download file-size cap. Deployments should bound concurrent downloads,
+bandwidth, and idle duration operationally rather than buffering or rejecting
+large logical files.
 
 ---
 
@@ -63,7 +104,7 @@ Protos in `lore-proto/proto/lore/`, implementations in
 |---|---|---|
 | `lore.storage.v1.StorageService` | `Get`, `GetMetadata`, `Put`, `Query`, `PresignDownload`, `Verify`, `Copy`, `MutableLoad`, `MutableStore`, `MutableCompareAndSwap` | Bidirectional streams for bulk transfer. `Put` **validates the payload hash server-side** (`protocol/storage/put.rs::validate_hash` via `lore_storage::hash_fragment`). Repository id travels as gRPC metadata (`REPOSITORY_ID_KEY`); identity via JWT interceptor. |
 | `lore.revision.v1.RevisionService` | `BranchCreate/Delete/Get/List/Push`, `BranchMetadataGet/Set`, `RevisionList` | Charter (proto header): *"minimal, stable set of graph primitives."* `BranchPush` is the **only revision-graph write**: takes a revision signature already present in CAS, deserializes the state server-side, checks `parent_self` against the current tip (tip-collision → `FailedPrecondition` with the current latest embedded), verifies referenced fragments exist (`verify_fragments`), honors branch protection (service accounts bypass), runs pre/post hooks, emits notifications, and supports `force` / `fast_forward_merge`. |
-| `lore.thin_client.v1.ThinClientService` | `RevisionInfo`, `RevisionTree`, `RevisionDiff`, `ContentDiff` | Charter: *"presentation helpers for clients that lack local cache or compute (web UIs)."* **Read-only** today. Handlers build a pathless `RepositoryContext::new_server_context(...)` and walk `State` server-side — the very same machinery the revision_tree SDK surface uses, proving the server can host this logic. `RevisionTree` streams `TreeNode {path, node_type, address, last_changed_revision}` — the wire twin of `lore_revision_tree_list_children`. |
+| `lore.thin_client.v1.ThinClientService` | `RevisionInfo`, `RevisionTree`, `RevisionDiff`, `ContentDiff`, `RevisionFileDownload` | Charter: *"presentation helpers for clients that lack local cache or compute (web UIs)."* Read handlers build a pathless `RepositoryContext::new_server_context(...)` and walk `State` server-side — the very same machinery the revision_tree SDK surface uses. `RevisionTree` streams `TreeNode {path, node_type, address, last_changed_revision}`; `RevisionFileDownload` resolves an exact file and returns a pinned, short-lived logical Lore HTTP URL. |
 | `lore.repository.v1.RepositoryService` | `RepositoryCreate/Delete/Get/List`, `RepositoryMetadataGet/Set` | Repo lifecycle incl. default-branch creation. Caller pre-generates ids (UUIDv7) for idempotent retries. |
 | `lore.environment.v1`, lock, notification, admin | — | Not relevant to this workflow. |
 
@@ -132,6 +173,11 @@ Can, today:
   `RevisionDiff`, `ContentDiff`, `StorageService.Get/GetMetadata` (bytes by
   address), `RevisionService.RevisionList` / `BranchGet` (by name!) /
   `BranchList`.
+- **Download one logical file by revision and path** through
+  `ThinClientService.RevisionFileDownload`, then redeem the returned Lore HTTP
+  URL directly from the browser with range/resume support.
+- **Stream arbitrary raw file bytes into Lore** through `UploadContent`, then
+  construct and publish an address-backed changeset through `RevisionCreate`.
 - **Upload already-framed storage fragments** through `StorageService.Put`.
   This RPC validates the supplied fragment metadata and payload hash, but it
   is not a raw-file upload API: the caller must already understand Lore's
@@ -139,15 +185,12 @@ Can, today:
   fragment-list roots.
 - **Advance a tip to an existing revision** through `BranchPush`.
 
-Cannot, today:
+Original gaps, now closed by this plan:
 
-- **Stream an arbitrary file as raw bytes and receive a Lore address** without
-  either buffering the file into the SDK or implementing Lore's storage format
-  in the caller.
-- **Construct a revision.** There is no RPC that turns "base revision + a set
-  of path-level operations + already-uploaded content addresses" into a new
-  revision. The merkle tree blocks, name tables, delta block, history weave,
-  and revision record can only be produced by the SDK.
+- `UploadContent` now streams an arbitrary file as raw bytes and returns a Lore
+  address without requiring the caller to understand Lore fragmentation.
+- `RevisionCreate` now turns a base revision plus path operations and uploaded
+  content addresses into a constructed, authoritatively published revision.
 
 The target thin-client flow is therefore two-phase:
 
