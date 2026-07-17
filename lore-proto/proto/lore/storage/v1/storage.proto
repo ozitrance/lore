@@ -10,6 +10,11 @@ service StorageService {
     // carries Fragment only — no payload bytes. Used by callers that need fragment metadata
     // (size, flags) for existence/size lookups without paying the payload transfer cost.
     rpc GetMetadata(stream lore.model.v1.Address) returns (stream GetResponse);
+    // UploadContent accepts one header followed by raw byte chunks. Lore owns
+    // chunking, hashing, compression, fragment-list construction, and durable
+    // storage. Cancellation can leave unreachable content-addressed fragments;
+    // it never publishes a revision or branch.
+    rpc UploadContent(stream UploadContentRequest) returns (UploadContentResponse);
     rpc Put(stream PutRequest) returns (stream PutResponse);
     rpc Query(QueryRequest) returns (QueryResponse);
     rpc PresignDownload(PresignDownloadRequest) returns (PresignDownloadResponse);
@@ -24,6 +29,32 @@ message GetResponse {
     lore.model.v1.Address address = 1;
     lore.model.v1.Fragment fragment = 2;
     bytes payload = 3;
+}
+
+message UploadContentRequest {
+    oneof part {
+        // Required exactly once as the first stream message.
+        UploadContentHeader header = 1;
+        // Raw file bytes. Chunks may be any non-empty transport-friendly size;
+        // callers must not pre-fragment them according to Lore internals.
+        bytes chunk = 2;
+    }
+}
+
+message UploadContentHeader {
+    // UUIDv7 file identity. Use the existing address context when modifying a
+    // file. Empty asks Lore to mint a UUIDv7 for a new file.
+    bytes file_id = 1;
+    // Optional integrity assertion checked against the actual bytes read.
+    optional uint64 expected_size = 2;
+    // Required caller-generated UUIDv7 for retry/correlation diagnostics.
+    bytes request_id = 3;
+}
+
+message UploadContentResponse {
+    lore.model.v1.Address address = 1;
+    // Actual logical byte count observed by Lore.
+    uint64 size = 2;
 }
 
 message PutRequest {

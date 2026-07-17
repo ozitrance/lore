@@ -9,6 +9,7 @@ use lore_base::types::Hash;
 use lore_proto::lore::model::v1 as model_v1;
 use lore_proto::lore::thin_client::v1 as thin_client_v1;
 use lore_proto::lore::thin_client::v1::revision_diff_request;
+use lore_proto::lore::thin_client::v1::revision_file_download_request;
 use lore_proto::lore::thin_client::v1::revision_info_request;
 use lore_proto::lore::thin_client::v1::revision_tree_request;
 use lore_revision::branch;
@@ -54,6 +55,15 @@ impl From<revision_tree_request::Query> for RevisionSpec {
         match query {
             revision_tree_request::Query::Signature(sig) => Self::Signature(sig),
             revision_tree_request::Query::Identifier(id) => Self::Identifier(id),
+        }
+    }
+}
+
+impl From<revision_file_download_request::Query> for RevisionSpec {
+    fn from(query: revision_file_download_request::Query) -> Self {
+        match query {
+            revision_file_download_request::Query::Signature(sig) => Self::Signature(sig),
+            revision_file_download_request::Query::Identifier(id) => Self::Identifier(id),
         }
     }
 }

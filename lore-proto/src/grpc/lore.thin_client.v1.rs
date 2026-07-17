@@ -755,6 +755,92 @@ impl ::prost::Name for RevisionTreeResponse {
         "/lore.thin_client.v1.RevisionTreeResponse".into()
     }
 }
+/// Request a browser-ready download URL for one exact file path.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RevisionFileDownloadRequest {
+    /// Repository-relative path to a file. Directories and links are rejected.
+    #[prost(string, tag = "3")]
+    pub path: ::prost::alloc::string::String,
+    /// Requested URL lifetime. Zero selects the server default; non-zero values
+    /// are clamped to the configured minimum and maximum.
+    #[prost(uint64, tag = "4")]
+    pub ttl_seconds: u64,
+    /// Response Content-Type. Empty defaults to application/octet-stream.
+    #[prost(string, tag = "5")]
+    pub content_type: ::prost::alloc::string::String,
+    /// When true, Content-Disposition is `inline`; otherwise it is `attachment`.
+    /// In both cases Lore derives and safely encodes the filename from `path`.
+    #[prost(bool, tag = "6")]
+    pub inline: bool,
+    /// Revision specifier.
+    #[prost(oneof = "revision_file_download_request::Query", tags = "1, 2")]
+    pub query: ::core::option::Option<revision_file_download_request::Query>,
+}
+/// Nested message and enum types in `RevisionFileDownloadRequest`.
+pub mod revision_file_download_request {
+    /// Revision specifier.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Query {
+        /// Identifier-based lookup; `number == 0` resolves to the tip of
+        /// the branch and the response pins the concrete signature.
+        #[prost(message, tag = "1")]
+        Identifier(crate::lore::model::v1::RevisionIdentifier),
+        /// Signature-based lookup.
+        #[prost(bytes, tag = "2")]
+        Signature(::prost::bytes::Bytes),
+    }
+}
+impl ::prost::Name for RevisionFileDownloadRequest {
+    const NAME: &'static str = "RevisionFileDownloadRequest";
+    const PACKAGE: &'static str = "lore.thin_client.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "lore.thin_client.v1.RevisionFileDownloadRequest".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/lore.thin_client.v1.RevisionFileDownloadRequest".into()
+    }
+}
+/// A pinned logical-file download. `url_suffix` is relative to the externally
+/// configured Lore HTTP origin because the gRPC server does not know ingress
+/// or reverse-proxy host names.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RevisionFileDownloadResponse {
+    /// Concrete revision selected by the request.
+    #[prost(message, optional, tag = "1")]
+    pub revision: ::core::option::Option<RevisionTreeHeader>,
+    /// Repository that owns the resolved file. This can differ from the request
+    /// repository when the path crosses an authorized repository link.
+    #[prost(bytes = "bytes", tag = "2")]
+    pub resolved_repository_id: ::prost::bytes::Bytes,
+    /// Immutable logical-content address stored on the file node.
+    #[prost(message, optional, tag = "3")]
+    pub address: ::core::option::Option<crate::lore::model::v1::Address>,
+    /// Logical file length after defragmentation and decompression.
+    #[prost(uint64, tag = "4")]
+    pub size: u64,
+    /// Short-lived Lore HTTP path, including its signed query token.
+    #[prost(string, tag = "5")]
+    pub url_suffix: ::prost::alloc::string::String,
+    /// Unix epoch seconds at which the URL expires.
+    #[prost(uint64, tag = "6")]
+    pub expires_at_epoch_seconds: u64,
+    /// Final path component used for Content-Disposition.
+    #[prost(string, tag = "7")]
+    pub file_name: ::prost::alloc::string::String,
+    /// File mode stored on the revision node.
+    #[prost(uint32, tag = "8")]
+    pub mode: u32,
+}
+impl ::prost::Name for RevisionFileDownloadResponse {
+    const NAME: &'static str = "RevisionFileDownloadResponse";
+    const PACKAGE: &'static str = "lore.thin_client.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "lore.thin_client.v1.RevisionFileDownloadResponse".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/lore.thin_client.v1.RevisionFileDownloadResponse".into()
+    }
+}
 /// Generated client implementations.
 pub mod thin_client_service_client {
     #![allow(
@@ -766,8 +852,8 @@ pub mod thin_client_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    /// Thin-client presentation helpers — describe / tree / diff RPCs that are
-    /// convenience helpers for clients that lack local cache or compute ( web UIs).
+    /// Thin-client presentation helpers — describe / tree / diff / download RPCs
+    /// for clients that lack local cache or compute (web UIs).
     /// Sits alongside the baseline lore.revision.v1.RevisionService and shares the
     /// same backing revision-graph state.
     #[derive(Debug, Clone)]
@@ -973,6 +1059,38 @@ pub mod thin_client_service_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
+        /// Resolve one file at an immutable revision and create a short-lived URL
+        /// that streams the reconstructed logical bytes through the Lore HTTP
+        /// server. The returned URL never exposes storage fragment URLs.
+        pub async fn revision_file_download(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RevisionFileDownloadRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RevisionFileDownloadResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/lore.thin_client.v1.ThinClientService/RevisionFileDownload",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "lore.thin_client.v1.ThinClientService",
+                        "RevisionFileDownload",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -1041,9 +1159,19 @@ pub mod thin_client_service_server {
             tonic::Response<Self::RevisionTreeStream>,
             tonic::Status,
         >;
+        /// Resolve one file at an immutable revision and create a short-lived URL
+        /// that streams the reconstructed logical bytes through the Lore HTTP
+        /// server. The returned URL never exposes storage fragment URLs.
+        async fn revision_file_download(
+            &self,
+            request: tonic::Request<super::RevisionFileDownloadRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RevisionFileDownloadResponse>,
+            tonic::Status,
+        >;
     }
-    /// Thin-client presentation helpers — describe / tree / diff RPCs that are
-    /// convenience helpers for clients that lack local cache or compute ( web UIs).
+    /// Thin-client presentation helpers — describe / tree / diff / download RPCs
+    /// for clients that lack local cache or compute (web UIs).
     /// Sits alongside the baseline lore.revision.v1.RevisionService and shares the
     /// same backing revision-graph state.
     #[derive(Debug)]
@@ -1305,6 +1433,55 @@ pub mod thin_client_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/lore.thin_client.v1.ThinClientService/RevisionFileDownload" => {
+                    #[allow(non_camel_case_types)]
+                    struct RevisionFileDownloadSvc<T: ThinClientService>(pub Arc<T>);
+                    impl<
+                        T: ThinClientService,
+                    > tonic::server::UnaryService<super::RevisionFileDownloadRequest>
+                    for RevisionFileDownloadSvc<T> {
+                        type Response = super::RevisionFileDownloadResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RevisionFileDownloadRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ThinClientService>::revision_file_download(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RevisionFileDownloadSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

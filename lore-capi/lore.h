@@ -118,6 +118,8 @@ typedef enum lore_error_code_t {
   LORE_ERROR_CODE_INTERNAL = 3,
   // The backing store is overloaded; the caller should retry later.
   LORE_ERROR_CODE_SLOW_DOWN = 4,
+  // The target branch tip advanced past the caller's parent revision.
+  LORE_ERROR_CODE_BRANCH_ADVANCED = 5,
 } lore_error_code_t;
 
 // Strategy used for a path during branch merge.
@@ -5143,7 +5145,7 @@ typedef struct lore_revision_tree_add_args_t {
   lore_node_id_t parent_node_id;
   // UTF-8 name of the new child within its parent
   struct lore_string_t name;
-  // `NodeKind` encoding: FILE=1, DIRECTORY=2, LINK=3
+  // `LoreNodeType` encoding: DIRECTORY=0, FILE=1, LINK=2
   uint32_t kind;
   // POSIX permission bits for the new node
   uint16_t mode;
@@ -10838,3 +10840,117 @@ int32_t lore_revision_tree_node_path(const struct lore_global_args_t *globals,
 void lore_revision_tree_node_path_async(const struct lore_global_args_t *globals,
                                         const struct lore_revision_tree_node_path_args_t *args,
                                         struct lore_event_callback_config_t callback);
+
+// Add a leaf or empty directory child under a parent node in a loaded
+// revision tree. The address is a value returned by `lore_storage_put`;
+// this call does not move bytes.
+//
+// | Terminal event                          | Payload                                        | Notes                                              |
+// |-----------------------------------------|------------------------------------------------|----------------------------------------------------|
+// | `LORE_EVENT_REVISION_TREE_ADD_COMPLETE` | `lore_revision_tree_add_complete_event_data_t` | Carries the newly-assigned node id on success      |
+int32_t lore_revision_tree_add(const struct lore_global_args_t *globals,
+                               const struct lore_revision_tree_add_args_t *args,
+                               struct lore_event_callback_config_t callback);
+
+// Add a leaf or empty directory child under a parent node (async variant).
+void lore_revision_tree_add_async(const struct lore_global_args_t *globals,
+                                  const struct lore_revision_tree_add_args_t *args,
+                                  struct lore_event_callback_config_t callback);
+
+// Mark a node and its transitive children as deleted in a loaded revision
+// tree. Subsequent reads on the same handle do not observe the deleted
+// subtree.
+//
+// | Terminal event                             | Payload                                           | Notes                                     |
+// |--------------------------------------------|---------------------------------------------------|-------------------------------------------|
+// | `LORE_EVENT_REVISION_TREE_DELETE_COMPLETE` | `lore_revision_tree_delete_complete_event_data_t` | Carries the per-call outcome              |
+int32_t lore_revision_tree_delete(const struct lore_global_args_t *globals,
+                                  const struct lore_revision_tree_delete_args_t *args,
+                                  struct lore_event_callback_config_t callback);
+
+// Mark a node and its transitive children as deleted (async variant).
+void lore_revision_tree_delete_async(const struct lore_global_args_t *globals,
+                                     const struct lore_revision_tree_delete_args_t *args,
+                                     struct lore_event_callback_config_t callback);
+
+// Update a leaf node's mode, size, and content address in a loaded revision
+// tree, preserving its file id.
+//
+// | Terminal event                             | Payload                                           | Notes                                     |
+// |--------------------------------------------|---------------------------------------------------|-------------------------------------------|
+// | `LORE_EVENT_REVISION_TREE_MODIFY_COMPLETE` | `lore_revision_tree_modify_complete_event_data_t` | Echoes the modified node id on success    |
+int32_t lore_revision_tree_modify(const struct lore_global_args_t *globals,
+                                  const struct lore_revision_tree_modify_args_t *args,
+                                  struct lore_event_callback_config_t callback);
+
+// Update a leaf node's mode, size, and content address (async variant).
+void lore_revision_tree_modify_async(const struct lore_global_args_t *globals,
+                                     const struct lore_revision_tree_modify_args_t *args,
+                                     struct lore_event_callback_config_t callback);
+
+// Move a node between parents with optional rename (or rename within one)
+// in a loaded revision tree, preserving its file id so the revision graph
+// records a true move.
+//
+// | Terminal event                           | Payload                                         | Notes                                     |
+// |------------------------------------------|-------------------------------------------------|-------------------------------------------|
+// | `LORE_EVENT_REVISION_TREE_MOVE_COMPLETE` | `lore_revision_tree_move_complete_event_data_t` | Echoes the moved node id on success       |
+int32_t lore_revision_tree_move(const struct lore_global_args_t *globals,
+                                const struct lore_revision_tree_move_args_t *args,
+                                struct lore_event_callback_config_t callback);
+
+// Move a node between parents with optional rename (async variant).
+void lore_revision_tree_move_async(const struct lore_global_args_t *globals,
+                                   const struct lore_revision_tree_move_args_t *args,
+                                   struct lore_event_callback_config_t callback);
+
+// Record a `(key, value, format)` triple on the in-progress revision's
+// metadata. The value lives on the handle until `lore_revision_tree_commit`
+// serializes it into the new revision's metadata fragment.
+//
+// | Terminal event                                   | Payload                                                 | Notes                        |
+// |--------------------------------------------------|---------------------------------------------------------|------------------------------|
+// | `LORE_EVENT_REVISION_TREE_METADATA_SET_COMPLETE` | `lore_revision_tree_metadata_set_complete_event_data_t` | Carries the per-call outcome |
+int32_t lore_revision_tree_metadata_set(const struct lore_global_args_t *globals,
+                                        const struct lore_revision_tree_metadata_set_args_t *args,
+                                        struct lore_event_callback_config_t callback);
+
+// Record a metadata triple on the in-progress revision (async variant).
+void lore_revision_tree_metadata_set_async(const struct lore_global_args_t *globals,
+                                           const struct lore_revision_tree_metadata_set_args_t *args,
+                                           struct lore_event_callback_config_t callback);
+
+// Read a metadata value by key from a loaded revision tree. Pending
+// `lore_revision_tree_metadata_set` edits take precedence over the loaded
+// revision's frozen metadata; a missing key emits no value event and
+// completes with status 0.
+//
+// | Terminal event                                   | Payload                                                 | Notes                                  |
+// |--------------------------------------------------|---------------------------------------------------------|----------------------------------------|
+// | `LORE_EVENT_REVISION_TREE_METADATA_GET_COMPLETE` | `lore_revision_tree_metadata_get_complete_event_data_t` | Carries the typed value on a hit       |
+int32_t lore_revision_tree_metadata_get(const struct lore_global_args_t *globals,
+                                        const struct lore_revision_tree_metadata_get_args_t *args,
+                                        struct lore_event_callback_config_t callback);
+
+// Read a metadata value by key (async variant).
+void lore_revision_tree_metadata_get_async(const struct lore_global_args_t *globals,
+                                           const struct lore_revision_tree_metadata_get_args_t *args,
+                                           struct lore_event_callback_config_t callback);
+
+// Freeze the handle's tree and commit it as a new revision, atomically
+// advancing the target branch tip. Honors the same tip-collision, branch
+// protection, and remote-write contract as the file-system-based commit.
+// On success the handle behaves as if freshly loaded from the new revision;
+// any commit failure invalidates the handle.
+//
+// | Terminal event                             | Payload                                           | Notes                                                                  |
+// |--------------------------------------------|---------------------------------------------------|------------------------------------------------------------------------|
+// | `LORE_EVENT_REVISION_TREE_COMMIT_COMPLETE` | `lore_revision_tree_commit_complete_event_data_t` | Carries the new revision hash; the observed tip on `BRANCH_ADVANCED`  |
+int32_t lore_revision_tree_commit(const struct lore_global_args_t *globals,
+                                  const struct lore_revision_tree_commit_args_t *args,
+                                  struct lore_event_callback_config_t callback);
+
+// Freeze the handle's tree and commit it as a new revision (async variant).
+void lore_revision_tree_commit_async(const struct lore_global_args_t *globals,
+                                     const struct lore_revision_tree_commit_args_t *args,
+                                     struct lore_event_callback_config_t callback);

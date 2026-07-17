@@ -28,6 +28,10 @@ service RevisionService {
   rpc BranchMetadataSet(BranchMetadataSetRequest) returns (BranchMetadataSetResponse);
   // Page through a branch's revision history. Server picks page size.
   rpc RevisionList     (RevisionListRequest)      returns (RevisionListResponse);
+  // Atomically apply an address-backed path changeset to an observed branch
+  // tip. Immutable construction happens first; the same protected BranchPush
+  // CAS path used by BranchPush is the visibility point.
+  rpc RevisionCreate   (RevisionCreateRequest)    returns (RevisionCreateResponse);
 }
 
 // Request to create a new branch. The caller must supply a fully-resolved
@@ -216,6 +220,61 @@ message RevisionListResponse {
   // the page of revisions older than this one. Unset when no further
   // older revisions exist.
   optional bytes signature_backward = 3;
+}
+
+message RevisionCreateRequest {
+  // Required caller-generated UUIDv7. Reusing it with identical request bytes
+  // returns the original result; reuse with different bytes is rejected.
+  bytes request_id = 1;
+  bytes branch_id = 2;
+  // Exact branch tip observed by the caller. Zero is valid only for an
+  // initial/root revision. Stale bases fail with FAILED_PRECONDITION.
+  bytes base_revision_signature = 3;
+  string commit_message = 4;
+  repeated RevisionCreateMetadataEntry metadata = 5;
+  repeated RevisionCreateOperation operations = 6;
+}
+
+message RevisionCreateMetadataEntry {
+  string key = 1;
+  bytes value = 2;
+  // lore metadata type encoding (Address=1, Boolean=2, Context=3, Hash=4,
+  // Numeric=5, String=6, Binary=255).
+  uint32 format = 3;
+}
+
+message RevisionCreateOperation {
+  oneof op {
+    RevisionCreatePutFile put_file = 1;
+    RevisionCreateDirectory create_directory = 2;
+    RevisionCreateDeletePath delete_path = 3;
+    RevisionCreateMovePath move_path = 4;
+  }
+}
+
+message RevisionCreatePutFile {
+  string path = 1;
+  uint32 mode = 2;
+  // UploadContent result. The server verifies the exact repository/context
+  // association and derives logical size from immutable fragment metadata.
+  lore.model.v1.Address address = 3;
+}
+
+message RevisionCreateDirectory {
+  string path = 1;
+  uint32 mode = 2;
+}
+
+message RevisionCreateDeletePath { string path = 1; }
+
+message RevisionCreateMovePath {
+  string source = 1;
+  string destination = 2;
+}
+
+message RevisionCreateResponse {
+  bytes revision_signature = 1;
+  uint64 revision_number = 2;
 }
 
 // A service to receive requests forwarded on from another Lore Sever,

@@ -6604,7 +6604,7 @@ pub async fn is_file_content_equal(
     } else {
         // Large file: stream stored content and compare chunk-by-chunk against
         // the file read in matching chunks
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<Bytes>(4);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
         let repo_clone = repository.clone();
         let stream_handle = lore_spawn!(async move {
             immutable::read_stream(repo_clone, address, options, sender).await
@@ -6619,6 +6619,10 @@ pub async fn is_file_content_equal(
         let mut bytes_compared: u64 = 0;
 
         while let Some(chunk) = receiver.recv().await {
+            let Ok(chunk) = chunk else {
+                equal = false;
+                break;
+            };
             use tokio::io::AsyncReadExt;
             let mut local_buf = vec![0u8; chunk.len()];
             if reader.read_exact(&mut local_buf).await.is_ok() {

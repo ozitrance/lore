@@ -10,6 +10,7 @@ pub mod presign_download;
 pub mod put;
 pub mod query;
 pub mod service;
+pub mod upload_content;
 pub mod verify;
 
 #[cfg(test)]

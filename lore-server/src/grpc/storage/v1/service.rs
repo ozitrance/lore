@@ -19,6 +19,7 @@ use super::presign_download;
 use super::put;
 use super::put::PutResponseStream;
 use super::query;
+use super::upload_content;
 use super::verify;
 use crate::grpc::storage_service::LoreStorageService;
 
@@ -49,6 +50,18 @@ impl StorageServiceV1 for LoreStorageService {
         request: Request<Streaming<storage_v1::PutRequest>>,
     ) -> Result<Response<Self::PutStream>, Status> {
         put::handler(request, self.immutable_store().clone(), self).await
+    }
+
+    async fn upload_content(
+        &self,
+        request: Request<Streaming<storage_v1::UploadContentRequest>>,
+    ) -> Result<Response<storage_v1::UploadContentResponse>, Status> {
+        upload_content::handler(
+            request,
+            self.immutable_store().clone(),
+            self.upload_content_max_bytes(),
+        )
+        .await
     }
 
     async fn query(

@@ -8,5 +8,6 @@ pub mod branch_metadata_get;
 pub mod branch_metadata_set;
 pub mod branch_push;
 mod branch_record;
+pub mod revision_create;
 pub mod revision_list;
 pub mod service;
