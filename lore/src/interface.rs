@@ -7490,7 +7490,12 @@ pub extern "C" fn lore_revision_tree_delete(
     args: &LoreRevisionTreeDeleteArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision_tree::delete::delete)
+    run_synchronously(
+        globals,
+        args,
+        callback,
+        crate::revision_tree::delete::delete,
+    )
 }
 
 /// Mark a node and its transitive children as deleted (async variant).
@@ -7500,7 +7505,12 @@ pub extern "C" fn lore_revision_tree_delete_async(
     args: &LoreRevisionTreeDeleteArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision_tree::delete::delete);
+    run_asynchronously(
+        globals,
+        args,
+        callback,
+        crate::revision_tree::delete::delete,
+    );
 }
 
 pub type LoreRevisionTreeModifyArgs = crate::revision_tree::modify::LoreRevisionTreeModifyArgs;
@@ -7517,7 +7527,12 @@ pub extern "C" fn lore_revision_tree_modify(
     args: &LoreRevisionTreeModifyArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision_tree::modify::modify)
+    run_synchronously(
+        globals,
+        args,
+        callback,
+        crate::revision_tree::modify::modify,
+    )
 }
 
 /// Update a leaf node's mode, size, and content address (async variant).
@@ -7527,7 +7542,12 @@ pub extern "C" fn lore_revision_tree_modify_async(
     args: &LoreRevisionTreeModifyArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision_tree::modify::modify);
+    run_asynchronously(
+        globals,
+        args,
+        callback,
+        crate::revision_tree::modify::modify,
+    );
 }
 
 pub type LoreRevisionTreeMoveArgs = crate::revision_tree::move_node::LoreRevisionTreeMoveArgs;
@@ -7647,7 +7667,8 @@ pub extern "C" fn lore_revision_tree_metadata_get_async(
     );
 }
 
-pub type LoreRevisionTreeCommitOptions = crate::revision_tree::commit::LoreRevisionTreeCommitOptions;
+pub type LoreRevisionTreeCommitOptions =
+    crate::revision_tree::commit::LoreRevisionTreeCommitOptions;
 pub type LoreRevisionTreeCommitArgs = crate::revision_tree::commit::LoreRevisionTreeCommitArgs;
 
 /// Freeze the handle's tree and commit it as a new revision, atomically
@@ -7665,7 +7686,12 @@ pub extern "C" fn lore_revision_tree_commit(
     args: &LoreRevisionTreeCommitArgs,
     callback: LoreEventCallbackConfig,
 ) -> i32 {
-    run_synchronously(globals, args, callback, crate::revision_tree::commit::commit)
+    run_synchronously(
+        globals,
+        args,
+        callback,
+        crate::revision_tree::commit::commit,
+    )
 }
 
 /// Freeze the handle's tree and commit it as a new revision (async variant).
@@ -7675,5 +7701,10 @@ pub extern "C" fn lore_revision_tree_commit_async(
     args: &LoreRevisionTreeCommitArgs,
     callback: LoreEventCallbackConfig,
 ) {
-    run_asynchronously(globals, args, callback, crate::revision_tree::commit::commit);
+    run_asynchronously(
+        globals,
+        args,
+        callback,
+        crate::revision_tree::commit::commit,
+    );
 }

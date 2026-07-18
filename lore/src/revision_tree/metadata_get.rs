@@ -155,21 +155,19 @@ async fn metadata_get_impl(
             if metadata_hash.is_zero() {
                 return Ok(());
             }
-            let metadata = match Metadata::deserialize(
-                internal.repository_context.clone(),
-                metadata_hash,
-            )
-            .await
-            {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    emit_metadata_get_error(id, LoreErrorCode::Internal);
-                    return Err(MetadataGetError::internal_with_context(
-                        error,
-                        "Metadata::deserialize",
-                    ));
-                }
-            };
+            let metadata =
+                match Metadata::deserialize(internal.repository_context.clone(), metadata_hash)
+                    .await
+                {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        emit_metadata_get_error(id, LoreErrorCode::Internal);
+                        return Err(MetadataGetError::internal_with_context(
+                            error,
+                            "Metadata::deserialize",
+                        ));
+                    }
+                };
             if let Some(event) = value_event(id, &metadata, key) {
                 LoreEvent::RevisionTreeMetadataGetComplete(event).send();
             }
@@ -292,7 +290,8 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_get_returns_a_pending_value() {
-        let (handle, store_handle_id) = load_handle("mg-pending", Partition::from([0x11u8; 16])).await;
+        let (handle, store_handle_id) =
+            load_handle("mg-pending", Partition::from([0x11u8; 16])).await;
         let set_status = metadata_set(
             LoreGlobalArgs::default(),
             LoreRevisionTreeMetadataSetArgs {
@@ -324,7 +323,8 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_get_missing_key_emits_no_value_and_completes_ok() {
-        let (handle, store_handle_id) = load_handle("mg-missing", Partition::from([0x22u8; 16])).await;
+        let (handle, store_handle_id) =
+            load_handle("mg-missing", Partition::from([0x22u8; 16])).await;
 
         let (status, events) = run_get(handle, 3, "no-such-key").await;
 
@@ -340,7 +340,8 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_get_numeric_value_round_trips_typed() {
-        let (handle, store_handle_id) = load_handle("mg-numeric", Partition::from([0x33u8; 16])).await;
+        let (handle, store_handle_id) =
+            load_handle("mg-numeric", Partition::from([0x33u8; 16])).await;
         let set_status = metadata_set(
             LoreGlobalArgs::default(),
             LoreRevisionTreeMetadataSetArgs {
@@ -369,7 +370,8 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_get_rejects_an_empty_key() {
-        let (handle, store_handle_id) = load_handle("mg-empty", Partition::from([0x44u8; 16])).await;
+        let (handle, store_handle_id) =
+            load_handle("mg-empty", Partition::from([0x44u8; 16])).await;
 
         let (status, events) = run_get(handle, 6, "").await;
 

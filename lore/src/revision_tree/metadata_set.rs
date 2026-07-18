@@ -295,7 +295,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(status, 0, "setting a string value must succeed, got {events:?}");
+        assert_eq!(
+            status, 0,
+            "setting a string value must succeed, got {events:?}"
+        );
         assert_eq!(set_outcome(&events, 1), Some(LoreErrorCode::None));
         assert!(events.contains(&CapturedEvent::Complete(0)));
 
@@ -341,7 +344,10 @@ mod tests {
 
         let (status, events) = run_set(handle, 4, "", "v", LoreMetadataType::String as u32).await;
         assert_eq!(status, 1, "an empty key must fail, got {events:?}");
-        assert_eq!(set_outcome(&events, 4), Some(LoreErrorCode::InvalidArguments));
+        assert_eq!(
+            set_outcome(&events, 4),
+            Some(LoreErrorCode::InvalidArguments)
+        );
 
         let (status, events) = run_set(handle, 5, "key", "v", 42).await;
         assert_eq!(status, 1, "an unknown format must fail, got {events:?}");

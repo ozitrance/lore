@@ -9,6 +9,7 @@ use std::sync::Arc;
 use lore_base::error::InvalidArguments;
 use lore_base::types::Address;
 use lore_error_set::prelude::*;
+use lore_storage::hash::hash_string;
 
 use crate::errors::StateErrors;
 use crate::event::EventError;
@@ -25,7 +26,6 @@ use crate::node::SiblingCycleGuard;
 use crate::repository::RepositoryContext;
 use crate::state;
 use crate::state::State;
-use lore_storage::hash::hash_string;
 
 #[error_set]
 pub enum RevisionTreeEditError {

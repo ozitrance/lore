@@ -471,12 +471,11 @@ mod tests {
     use std::io::Cursor;
     use std::path::PathBuf;
 
+    use super::*;
     use crate::local::immutable_store::ImmutableStoreSettings;
     use crate::local::immutable_store::LocalImmutableStore;
     use crate::options::ReadOptions;
     use crate::test_util::TempDir;
-
-    use super::*;
 
     async fn make_test_store(label: &str) -> (TempDir, Arc<dyn ImmutableStore>) {
         let dir = TempDir::new(label);
