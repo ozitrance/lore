@@ -2,11 +2,7 @@
 // SPDX-License-Identifier: MIT
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
-use bytes::Bytes;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use lore_base::runtime::LORE_CONTEXT;
@@ -29,19 +25,15 @@ use lore_revision::notification::NotificationSender;
 use lore_revision::repository::RepositoryContext;
 use lore_revision::revision_tree::RevisionTreeEditError;
 use lore_revision::state::State;
-use lore_storage::KeyType;
 use lore_storage::StoreMatch;
-use lore_storage::options::ReadOptions;
-use lore_storage::options::WriteOptions;
 use lore_telemetry::InstrumentProvider;
 use prost::Message;
-use serde::Deserialize;
-use serde::Serialize;
 use tonic::Request;
 use tonic::Response;
 use tonic::Status;
 
 use super::branch_push::publish_revision;
+use super::idempotency;
 use crate::grpc::extract_correlation_id;
 use crate::grpc::get_authorization;
 use crate::grpc::get_repository;
@@ -59,234 +51,6 @@ pub struct RevisionCreateLimits {
     pub max_metadata_entries: usize,
     pub max_metadata_bytes: usize,
     pub max_path_bytes: usize,
-}
-
-const IDEMPOTENCY_PENDING_TTL: Duration = Duration::from_secs(15 * 60);
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct IdempotencyRecord {
-    request_digest: Hash,
-    created_at_epoch_seconds: u64,
-    revision: Hash,
-    revision_number: u64,
-}
-
-impl IdempotencyRecord {
-    fn pending(request_digest: Hash) -> Self {
-        Self {
-            request_digest,
-            created_at_epoch_seconds: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            revision: Hash::default(),
-            revision_number: 0,
-        }
-    }
-
-    fn is_complete(&self) -> bool {
-        !self.revision.is_zero()
-    }
-
-    fn is_expired(&self) -> bool {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .saturating_sub(self.created_at_epoch_seconds)
-            >= IDEMPOTENCY_PENDING_TTL.as_secs()
-    }
-}
-
-struct IdempotencyReservation {
-    key: Hash,
-    record_hash: Hash,
-    request_id: Context,
-    request_digest: Hash,
-}
-
-enum IdempotencyStart {
-    Completed(revision_v1::RevisionCreateResponse),
-    Reserved(IdempotencyReservation),
-}
-
-fn idempotency_key(branch: BranchId, request_id: Context) -> Hash {
-    let mut bytes = Vec::with_capacity(32 + 16 + 16);
-    bytes.extend_from_slice(b"lore.revision-create.v1\0");
-    bytes.extend_from_slice(branch.data());
-    bytes.extend_from_slice(request_id.data());
-    Hash::hash_buffer(&bytes)
-}
-
-async fn store_idempotency_record(
-    immutable_store: Arc<dyn lore_storage::ImmutableStore>,
-    repository: Partition,
-    request_id: Context,
-    record: &IdempotencyRecord,
-) -> Result<Hash, Status> {
-    let bytes = serde_json::to_vec(record)
-        .map_err(|error| Status::internal(format!("serialize idempotency record: {error}")))?;
-    let (address, _) = lore_storage::write_content(
-        immutable_store,
-        repository,
-        request_id,
-        Bytes::from(bytes),
-        WriteOptions::default().with_local_cache_priority(),
-        None,
-        None,
-    )
-    .await
-    .map_err(|error| Status::internal(format!("store idempotency record: {error}")))?;
-    Ok(address.hash)
-}
-
-async fn load_idempotency_record(
-    immutable_store: Arc<dyn lore_storage::ImmutableStore>,
-    repository: Partition,
-    request_id: Context,
-    record_hash: Hash,
-) -> Result<IdempotencyRecord, Status> {
-    let bytes = lore_storage::read(
-        immutable_store,
-        repository,
-        Address {
-            hash: record_hash,
-            context: request_id,
-        },
-        None,
-        ReadOptions::default(),
-        None,
-    )
-    .await
-    .map_err(|error| Status::internal(format!("load idempotency record: {error}")))?;
-    serde_json::from_slice(bytes.as_ref())
-        .map_err(|error| Status::internal(format!("decode idempotency record: {error}")))
-}
-
-async fn begin_idempotency(
-    immutable_store: Arc<dyn lore_storage::ImmutableStore>,
-    mutable_store: Arc<dyn lore_storage::MutableStore>,
-    repository: Partition,
-    branch: BranchId,
-    request_id: Context,
-    request_digest: Hash,
-) -> Result<IdempotencyStart, Status> {
-    let key = idempotency_key(branch, request_id);
-    for _ in 0..4 {
-        let current = match mutable_store
-            .clone()
-            .load(repository, key, KeyType::Untyped)
-            .await
-        {
-            Ok(hash) => hash,
-            Err(error) if error.is_address_not_found() => Hash::default(),
-            Err(error) => {
-                return Err(Status::internal(format!(
-                    "load RevisionCreate idempotency pointer: {error}"
-                )));
-            }
-        };
-
-        if !current.is_zero() {
-            let record =
-                load_idempotency_record(immutable_store.clone(), repository, request_id, current)
-                    .await?;
-            if record.request_digest != request_digest {
-                return Err(Status::already_exists(
-                    "request_id was already used with different request content",
-                ));
-            }
-            if record.is_complete() {
-                return Ok(IdempotencyStart::Completed(
-                    revision_v1::RevisionCreateResponse {
-                        revision_signature: record.revision.into(),
-                        revision_number: record.revision_number,
-                    },
-                ));
-            }
-            if !record.is_expired() {
-                return Err(Status::aborted(
-                    "an identical RevisionCreate request is still in progress; retry later",
-                ));
-            }
-        }
-
-        let pending = IdempotencyRecord::pending(request_digest);
-        let pending_hash =
-            store_idempotency_record(immutable_store.clone(), repository, request_id, &pending)
-                .await?;
-        let observed = mutable_store
-            .clone()
-            .compare_and_swap(repository, key, current, pending_hash, KeyType::Untyped)
-            .await
-            .map_err(|error| {
-                Status::internal(format!("reserve RevisionCreate request_id: {error}"))
-            })?;
-        if observed == current {
-            return Ok(IdempotencyStart::Reserved(IdempotencyReservation {
-                key,
-                record_hash: pending_hash,
-                request_id,
-                request_digest,
-            }));
-        }
-    }
-    Err(Status::aborted(
-        "RevisionCreate request_id reservation changed concurrently; retry",
-    ))
-}
-
-async fn release_idempotency(
-    mutable_store: Arc<dyn lore_storage::MutableStore>,
-    repository: Partition,
-    reservation: &IdempotencyReservation,
-) {
-    let _ = mutable_store
-        .compare_and_swap(
-            repository,
-            reservation.key,
-            reservation.record_hash,
-            Hash::default(),
-            KeyType::Untyped,
-        )
-        .await;
-}
-
-async fn complete_idempotency(
-    immutable_store: Arc<dyn lore_storage::ImmutableStore>,
-    mutable_store: Arc<dyn lore_storage::MutableStore>,
-    repository: Partition,
-    reservation: &IdempotencyReservation,
-    result: &revision_v1::RevisionCreateResponse,
-) -> Result<(), Status> {
-    let record = IdempotencyRecord {
-        request_digest: reservation.request_digest,
-        created_at_epoch_seconds: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        revision: fixed_hash(result.revision_signature.as_ref(), "published revision")?,
-        revision_number: result.revision_number,
-    };
-    let completed_hash =
-        store_idempotency_record(immutable_store, repository, reservation.request_id, &record)
-            .await?;
-    let observed = mutable_store
-        .compare_and_swap(
-            repository,
-            reservation.key,
-            reservation.record_hash,
-            completed_hash,
-            KeyType::Untyped,
-        )
-        .await
-        .map_err(|error| Status::internal(format!("complete idempotency record: {error}")))?;
-    if observed != reservation.record_hash {
-        return Err(Status::internal(
-            "RevisionCreate idempotency reservation changed before completion",
-        ));
-    }
-    Ok(())
 }
 
 impl Default for RevisionCreateLimits {
@@ -739,12 +503,13 @@ pub async fn handler(
         return Err(Status::invalid_argument("branch_id must be non-zero"));
     }
     let base_revision = fixed_hash(
-        req.base_revision_signature.as_ref(),
-        "base_revision_signature",
+        req.revision_signature_base.as_ref(),
+        "revision_signature_base",
     )?;
     let request_digest = Hash::hash_buffer(req.encode_to_vec().as_slice());
 
-    let reservation = match begin_idempotency(
+    let reservation = match idempotency::begin(
+        "RevisionCreate",
         immutable_store.clone(),
         mutable_store.clone(),
         repository_id,
@@ -754,8 +519,16 @@ pub async fn handler(
     )
     .await?
     {
-        IdempotencyStart::Completed(response) => return Ok(Response::new(response)),
-        IdempotencyStart::Reserved(reservation) => reservation,
+        idempotency::Start::Completed {
+            revision,
+            revision_number,
+        } => {
+            return Ok(Response::new(revision_v1::RevisionCreateResponse {
+                revision_signature: revision.into(),
+                revision_number,
+            }));
+        }
+        idempotency::Start::Reserved(reservation) => reservation,
     };
 
     let repository = Arc::new(RepositoryContext::new_server_context(
@@ -767,7 +540,7 @@ pub async fn handler(
         .await
         .unwrap_or_default();
     if current_tip != base_revision {
-        release_idempotency(mutable_store, repository_id, &reservation).await;
+        idempotency::release(mutable_store, repository_id, &reservation).await;
         return Err(Status::failed_precondition(format!(
             "branch advanced; current latest: {current_tip}"
         )));
@@ -776,14 +549,14 @@ pub async fn handler(
     let pending_metadata = match metadata(&req.metadata, &req.commit_message) {
         Ok(metadata) => metadata,
         Err(status) => {
-            release_idempotency(mutable_store, repository_id, &reservation).await;
+            idempotency::release(mutable_store, repository_id, &reservation).await;
             return Err(status);
         }
     };
     let sizes = match address_sizes(immutable_store.clone(), repository_id, &req.operations).await {
         Ok(sizes) => sizes,
         Err(status) => {
-            release_idempotency(mutable_store, repository_id, &reservation).await;
+            idempotency::release(mutable_store, repository_id, &reservation).await;
             return Err(status);
         }
     };
@@ -850,18 +623,22 @@ pub async fn handler(
 
     match outcome {
         Ok(response) => {
-            complete_idempotency(
+            idempotency::complete(
                 immutable_store,
                 mutable_store,
                 repository_id,
                 &reservation,
-                response.get_ref(),
+                fixed_hash(
+                    response.get_ref().revision_signature.as_ref(),
+                    "published revision",
+                )?,
+                response.get_ref().revision_number,
             )
             .await?;
             Ok(response)
         }
         Err(status) => {
-            release_idempotency(mutable_store, repository_id, &reservation).await;
+            idempotency::release(mutable_store, repository_id, &reservation).await;
             Err(status)
         }
     }
@@ -869,6 +646,7 @@ pub async fn handler(
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use lore_proto::lore::storage::v1::UploadContentHeader;
     use lore_proto::lore::storage::v1::UploadContentRequest;
     use lore_proto::lore::storage::v1::upload_content_request::Part as UploadPart;
@@ -877,6 +655,7 @@ mod tests {
     use lore_proto::lore::thin_client::v1::revision_tree_response::Payload;
     use lore_revision::branch::DEFAULT_HISTORY_STEP_SIZE;
     use lore_revision::node::NodeIDExt;
+    use lore_storage::options::WriteOptions;
     use lore_telemetry::InstrumentProvider;
     use opentelemetry::KeyValue;
     use tokio_stream::StreamExt;
@@ -927,7 +706,7 @@ mod tests {
         let mut request = Request::new(revision_v1::RevisionCreateRequest {
             request_id: Bytes::copy_from_slice(request_id.as_bytes()),
             branch_id: branch_id.into(),
-            base_revision_signature: base.into(),
+            revision_signature_base: base.into(),
             commit_message: "browser edit".into(),
             metadata: Vec::new(),
             operations,

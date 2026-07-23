@@ -12,6 +12,8 @@ use lore_proto::lore::revision::v1::BranchGetRequest;
 use lore_proto::lore::revision::v1::BranchGetResponse;
 use lore_proto::lore::revision::v1::BranchListRequest;
 use lore_proto::lore::revision::v1::BranchListResponse;
+use lore_proto::lore::revision::v1::BranchMergeRequest;
+use lore_proto::lore::revision::v1::BranchMergeResponse;
 use lore_proto::lore::revision::v1::BranchMetadataGetRequest;
 use lore_proto::lore::revision::v1::BranchMetadataGetResponse;
 use lore_proto::lore::revision::v1::BranchMetadataSetRequest;
@@ -35,6 +37,7 @@ use super::branch_create;
 use super::branch_delete;
 use super::branch_get;
 use super::branch_list;
+use super::branch_merge;
 use super::branch_metadata_get;
 use super::branch_metadata_set;
 use super::branch_push;
@@ -232,6 +235,26 @@ impl RevisionService for LoreRevisionV1Service {
         timeout_grpc(
             self.rpc_timeout,
             branch_push::handler(
+                request,
+                self.immutable_store.clone(),
+                self.mutable_store.clone(),
+                self.notification.clone(),
+                &self.hook_dispatcher,
+                self.history_step_size,
+                self.acceleration,
+                &self.instrument_provider,
+            ),
+        )
+        .await
+    }
+
+    async fn branch_merge(
+        &self,
+        request: Request<BranchMergeRequest>,
+    ) -> Result<Response<BranchMergeResponse>, Status> {
+        timeout_grpc(
+            self.rpc_timeout,
+            branch_merge::handler(
                 request,
                 self.immutable_store.clone(),
                 self.mutable_store.clone(),

@@ -35,6 +35,7 @@ pub use lore_base;
 pub mod lore;
 pub mod merge;
 pub mod merge_carry;
+pub mod merge_resolution;
 pub mod metadata;
 pub mod nametable;
 pub mod node;

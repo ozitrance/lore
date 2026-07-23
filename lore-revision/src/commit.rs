@@ -1280,6 +1280,61 @@ pub async fn construct_tree_revision(
     branch: BranchId,
     deleted: Vec<NodeDelta>,
 ) -> Result<Hash, CommitError> {
+    construct_tree_revision_with_parent(
+        repository,
+        token,
+        state,
+        pending_metadata,
+        branch,
+        Hash::default(),
+        deleted,
+        false,
+    )
+    .await
+}
+
+/// Construct a normal two-parent merge revision from an in-memory target
+/// tree. Unlike [`construct_tree_revision`], an unchanged tree is valid: the
+/// second parent records that the source lineage was considered and merged.
+#[allow(clippy::too_many_arguments)]
+pub async fn construct_merge_revision(
+    repository: Arc<RepositoryContext>,
+    token: &RepositoryWriteToken,
+    state: Arc<State>,
+    pending_metadata: Metadata,
+    branch: BranchId,
+    source_revision: Hash,
+    deleted: Vec<NodeDelta>,
+) -> Result<Hash, CommitError> {
+    if source_revision.is_zero() {
+        return Err(CommitError::internal(
+            "merge source revision must be non-zero",
+        ));
+    }
+    construct_tree_revision_with_parent(
+        repository,
+        token,
+        state,
+        pending_metadata,
+        branch,
+        source_revision,
+        deleted,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn construct_tree_revision_with_parent(
+    repository: Arc<RepositoryContext>,
+    token: &RepositoryWriteToken,
+    state: Arc<State>,
+    pending_metadata: Metadata,
+    branch: BranchId,
+    parent_other: Hash,
+    deleted: Vec<NodeDelta>,
+    allow_unchanged_tree: bool,
+) -> Result<Hash, CommitError> {
     let context = execution_context();
     let globals = context.globals();
     let parent_revision = state.revision();
@@ -1287,7 +1342,7 @@ pub async fn construct_tree_revision(
     // An untouched handle has nothing to freeze: edits dirty the state and
     // deletes leave recorded entries, so a clean state with no carried
     // deletes is a no-op commit.
-    if !globals.force() && deleted.is_empty() && !state.is_dirty() {
+    if !allow_unchanged_tree && !globals.force() && deleted.is_empty() && !state.is_dirty() {
         return Err(NothingStaged.into());
     }
 
@@ -1321,7 +1376,7 @@ pub async fn construct_tree_revision(
     }
     commit_tree_freeze(repository.clone(), state.clone(), ROOT_NODE, delta.clone()).await?;
 
-    if !globals.force() {
+    if !allow_unchanged_tree && !globals.force() {
         let read = delta.read();
         if read.count::<NodeDelta>() == 0 {
             return Err(NothingStaged.into());
@@ -1331,7 +1386,7 @@ pub async fn construct_tree_revision(
     // Derive the new revision from the loaded parent. The weave assigns the
     // revision number; the metadata hash lands after it serializes below.
     state.set_parent_self(parent_revision);
-    state.set_parent_other(Hash::default());
+    state.set_parent_other(parent_other);
 
     // Same graceful-drain pattern as commit_staged_revision: run all
     // write-producing work under the tracker, then ALWAYS drain so no
@@ -1353,7 +1408,10 @@ pub async fn construct_tree_revision(
 
         // Same identical-tree guard as the file-system-based commit: edits
         // that reproduce the parent's tree byte for byte are a no-op.
-        if !execution_context().globals().force() && !parent_revision.is_zero() {
+        if !allow_unchanged_tree
+            && !execution_context().globals().force()
+            && !parent_revision.is_zero()
+        {
             let state_parent = State::deserialize(repository.clone(), parent_revision)
                 .await
                 .forward_with::<CommitError, _>(|| {

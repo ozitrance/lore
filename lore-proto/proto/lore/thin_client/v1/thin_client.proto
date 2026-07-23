@@ -182,7 +182,7 @@ message RevisionFileDownloadResponse {
   RevisionTreeHeader revision = 1;
   // Repository that owns the resolved file. This can differ from the request
   // repository when the path crosses an authorized repository link.
-  bytes resolved_repository_id = 2;
+  bytes repository_resolved = 2;
   // Immutable logical-content address stored on the file node.
   lore.model.v1.Address address = 3;
   // Logical file length after defragmentation and decompression.

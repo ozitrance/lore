@@ -7753,7 +7753,31 @@ pub async fn apply_tree_changes(
     target_state: Arc<State>,
     changes: &[NodeChange],
 ) -> Result<(), StateError> {
+    apply_tree_changes_inner(repository, target_state, changes, false)
+        .await
+        .map(|_| ())
+}
+
+/// Commit-ready variant of [`apply_tree_changes`]. Deleted and moved-away
+/// nodes are discarded from the target tree and returned as delta entries,
+/// allowing [`crate::commit::construct_merge_revision`] to freeze and rehash
+/// the resulting tree into a normal immutable revision.
+pub async fn apply_tree_changes_for_commit(
+    repository: Arc<RepositoryContext>,
+    target_state: Arc<State>,
+    changes: &[NodeChange],
+) -> Result<Vec<NodeDelta>, StateError> {
+    apply_tree_changes_inner(repository, target_state, changes, true).await
+}
+
+async fn apply_tree_changes_inner(
+    repository: Arc<RepositoryContext>,
+    target_state: Arc<State>,
+    changes: &[NodeChange],
+    discard_deletes: bool,
+) -> Result<Vec<NodeDelta>, StateError> {
     let stats = Arc::new(crate::stage::StageStats::default());
+    let mut deleted = Vec::new();
 
     // Process deletes first, in reverse path order (deepest paths first) so that
     // children are deleted before parent directories
@@ -7773,7 +7797,19 @@ pub async fn apply_tree_changes(
             Err(err) => return Err(err),
         };
 
-        if node_link.is_valid() {
+        if node_link.is_valid() && discard_deletes {
+            deleted.extend(
+                crate::revision_tree::delete_node(
+                    target_state.clone(),
+                    repository.clone(),
+                    node_link.node,
+                )
+                .await
+                .map_err(|error| {
+                    StateError::internal_with_context(error, "discarding merge deletion")
+                })?,
+            );
+        } else if node_link.is_valid() {
             crate::stage::stage_delete(
                 repository.clone(),
                 target_state.clone(),
@@ -7806,7 +7842,19 @@ pub async fn apply_tree_changes(
                 Err(err) => return Err(err),
             };
 
-            if node_link.is_valid() {
+            if node_link.is_valid() && discard_deletes {
+                deleted.extend(
+                    crate::revision_tree::delete_node(
+                        target_state.clone(),
+                        repository.clone(),
+                        node_link.node,
+                    )
+                    .await
+                    .map_err(|error| {
+                        StateError::internal_with_context(error, "discarding merge move source")
+                    })?,
+                );
+            } else if node_link.is_valid() {
                 crate::stage::stage_delete(
                     repository.clone(),
                     target_state.clone(),
@@ -7845,7 +7893,7 @@ pub async fn apply_tree_changes(
         .internal("Node not found")?;
     }
 
-    Ok(())
+    Ok(deleted)
 }
 
 #[cfg(test)]

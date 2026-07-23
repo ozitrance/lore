@@ -516,7 +516,15 @@ async fn run_three_way(
                         unreachable!("resolve_or_announce returns Sent only via Ok")
                     }
                 };
-                Payload::Conflict(diff_conflict_from_pair(&pair, index_from, index_to))
+                let conflict_id = lore_revision::merge_resolution::conflict_id(
+                    base, from_sig, to_sig, &pair.0, &pair.1,
+                );
+                Payload::Conflict(diff_conflict_from_pair(
+                    &pair,
+                    conflict_id,
+                    index_from,
+                    index_to,
+                ))
             }
         };
         match send_payload(tx, payload).await {

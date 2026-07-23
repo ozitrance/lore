@@ -169,12 +169,12 @@ pub async fn handler(
                 Status::internal("generated Content-Disposition is not a valid HTTP header value")
             })?;
 
-            let resolved_repository_id = node_link.repository;
+            let repository_resolved = node_link.repository;
             let address = node.address;
             let payload = PresignTokenPayload {
                 version: CURRENT_TOKEN_VERSION,
                 key_id: presign_config.key_id,
-                repository: resolved_repository_id.to_string(),
+                repository: repository_resolved.to_string(),
                 address: address.to_string(),
                 expires_at,
                 content_type: Some(content_type),
@@ -183,17 +183,14 @@ pub async fn handler(
                 content_length: Some(node.size),
             };
             let token = sign(&payload, &presign_config.hmac_key);
-            let url_suffix =
-                format!("/v1/presigned/{resolved_repository_id}/{address}?token={token}");
+            let url_suffix = format!("/v1/presigned/{repository_resolved}/{address}?token={token}");
 
             Ok(Response::new(RevisionFileDownloadResponse {
                 revision: Some(thin_client_v1::RevisionTreeHeader {
                     identifier: Some(identifier),
                     signature: signature.into(),
                 }),
-                resolved_repository_id: bytes::Bytes::copy_from_slice(
-                    resolved_repository_id.data(),
-                ),
+                repository_resolved: bytes::Bytes::copy_from_slice(repository_resolved.data()),
                 address: Some(model_v1::Address {
                     hash: address.hash.into(),
                     context: address.context.into(),
@@ -523,10 +520,7 @@ mod tests {
                     lore_storage::Address::from(response.address.as_ref().unwrap()),
                     address
                 );
-                assert_eq!(
-                    response.resolved_repository_id.as_ref(),
-                    repository_id.data()
-                );
+                assert_eq!(response.repository_resolved.as_ref(), repository_id.data());
 
                 let token = response
                     .url_suffix

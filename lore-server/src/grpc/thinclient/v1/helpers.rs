@@ -296,6 +296,7 @@ pub(super) fn node_change_to_diff_change(
 /// take separate indices: they can land in different partitions.
 pub(super) fn diff_conflict_from_pair(
     pair: &(NodeChange, NodeChange),
+    conflict_id: lore_base::types::Hash,
     link_repository_index_from: u32,
     link_repository_index_to: u32,
 ) -> thin_client_v1::DiffConflict {
@@ -308,6 +309,7 @@ pub(super) fn diff_conflict_from_pair(
             &pair.1,
             link_repository_index_to,
         )),
+        conflict_id: conflict_id.into(),
     }
 }
 
@@ -443,7 +445,7 @@ mod tests {
         let from = make_change(lore_revision::change::FileAction::Keep);
         let to = make_change(lore_revision::change::FileAction::Keep);
 
-        let mapped = diff_conflict_from_pair(&(from, to), 0, 3);
+        let mapped = diff_conflict_from_pair(&(from, to), Hash::from_u64(7), 0, 3);
         assert_eq!(
             mapped.change_from.as_ref().unwrap().link_repository_index,
             0,
@@ -454,5 +456,6 @@ mod tests {
             3,
             "to-half carries its own index, distinct from from-half",
         );
+        assert_eq!(Hash::from(&mapped.conflict_id), Hash::from_u64(7));
     }
 }

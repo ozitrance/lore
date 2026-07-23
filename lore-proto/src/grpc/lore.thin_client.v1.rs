@@ -60,6 +60,11 @@ pub struct DiffConflict {
     /// The change the other side made relative to the common ancestor.
     #[prost(message, optional, tag = "2")]
     pub change_to: ::core::option::Option<DiffChange>,
+    /// Stable identifier for this conflict when the resolved base and the
+    /// request's from/to revisions remain pinned. Pass this value to
+    /// lore.revision.v1.BranchMerge when selecting a resolution.
+    #[prost(bytes = "bytes", tag = "3")]
+    pub conflict_id: ::prost::bytes::Bytes,
 }
 impl ::prost::Name for DiffConflict {
     const NAME: &'static str = "DiffConflict";
@@ -811,7 +816,7 @@ pub struct RevisionFileDownloadResponse {
     /// Repository that owns the resolved file. This can differ from the request
     /// repository when the path crosses an authorized repository link.
     #[prost(bytes = "bytes", tag = "2")]
-    pub resolved_repository_id: ::prost::bytes::Bytes,
+    pub repository_resolved: ::prost::bytes::Bytes,
     /// Immutable logical-content address stored on the file node.
     #[prost(message, optional, tag = "3")]
     pub address: ::core::option::Option<crate::lore::model::v1::Address>,

@@ -87,6 +87,10 @@ message DiffConflict {
   DiffChange change_from = 1;
   // The change the other side made relative to the common ancestor.
   DiffChange change_to = 2;
+  // Stable identifier for this conflict when the resolved base and the
+  // request's from/to revisions remain pinned. Pass this value to
+  // lore.revision.v1.BranchMerge when selecting a resolution.
+  bytes conflict_id = 3;
 }
 
 // Per-stream partition table entry. Announces a linked partition and
