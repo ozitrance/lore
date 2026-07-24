@@ -16,6 +16,7 @@ use lore_proto::lore::thin_client::v1::MetadataType;
 use lore_proto::lore::thin_client::v1::NodeType;
 use lore_proto::lore::thin_client::v1::Revision;
 use lore_proto::lore::thin_client::v1::RevisionDiffHeader;
+use lore_proto::lore::thin_client::v1::RevisionDiffMode;
 use lore_proto::lore::thin_client::v1::RevisionDiffRequest;
 use lore_proto::lore::thin_client::v1::RevisionDiffResponse;
 use lore_proto::lore::thin_client::v1::RevisionFileDownloadRequest;
@@ -52,6 +53,7 @@ fn v1_thin_client_model_types_default() {
     assert_eq!(NodeType::Directory as i32, 0);
     assert_eq!(Action::Keep as i32, 0);
     assert_eq!(MetadataType::Address as i32, 0);
+    assert_eq!(RevisionDiffMode::Auto as i32, 0);
 }
 
 #[test]
@@ -158,6 +160,7 @@ fn v1_thin_client_field_shapes() {
         query_from: _,
         query_to: _,
         autoresolve: _,
+        mode: _,
     } = RevisionDiffRequest::default();
     let _ = RevisionDiffQueryFrom::IdentifierFrom(Default::default());
     let _ = RevisionDiffQueryFrom::SignatureFrom(Default::default());
@@ -170,6 +173,7 @@ fn v1_thin_client_field_shapes() {
         signature_to: _,
         identifier_base: _,
         signature_base: _,
+        mode: _,
     } = RevisionDiffHeader::default();
     let RevisionDiffResponse { payload: _ } = RevisionDiffResponse::default();
     let _ = RevisionDiffPayload::Header(Default::default());

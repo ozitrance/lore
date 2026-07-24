@@ -535,15 +535,18 @@ impl ::prost::Name for RevisionInfoResponse {
         "/lore.thin_client.v1.RevisionInfoResponse".into()
     }
 }
-/// Request to diff two revisions. Server picks the diff mode (2-way vs
-/// 3-way) from revision metadata; callers do not declare it.
+/// Request to diff two revisions. Callers may explicitly select pairwise or
+/// merge semantics; AUTO preserves the server's metadata-driven behavior.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RevisionDiffRequest {
-    /// When true and the server picks 3-way mode, auto-resolved
-    /// DiffChange entries are flagged via `automerged = true`. Silently
-    /// ignored in 2-way mode.
+    /// When true and the effective mode is MERGE, auto-resolved DiffChange
+    /// entries are flagged via `automerged = true`. Silently ignored in
+    /// PAIRWISE mode.
     #[prost(bool, tag = "5")]
     pub autoresolve: bool,
+    /// Requested comparison semantics. AUTO preserves the legacy behavior.
+    #[prost(enumeration = "RevisionDiffMode", tag = "6")]
+    pub mode: i32,
     /// "From" side specifier.
     #[prost(oneof = "revision_diff_request::QueryFrom", tags = "1, 2")]
     pub query_from: ::core::option::Option<revision_diff_request::QueryFrom>,
@@ -586,8 +589,8 @@ impl ::prost::Name for RevisionDiffRequest {
 }
 /// Header for a RevisionDiff stream. Echoes the resolved revisions so
 /// callers querying by signature learn the (branch, number) and vice
-/// versa. Optional `_base` fields are populated only when the server
-/// selected a 3-way diff.
+/// versa. `mode` reports the effective mode after AUTO resolution. Optional
+/// `_base` fields are populated for non-identical MERGE comparisons.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RevisionDiffHeader {
     /// Resolved (branch, number) of the "from" side.
@@ -616,6 +619,9 @@ pub struct RevisionDiffHeader {
     /// 3-way mode.
     #[prost(bytes = "bytes", optional, tag = "6")]
     pub signature_base: ::core::option::Option<::prost::bytes::Bytes>,
+    /// Effective comparison mode after resolving AUTO.
+    #[prost(enumeration = "RevisionDiffMode", tag = "7")]
+    pub mode: i32,
 }
 impl ::prost::Name for RevisionDiffHeader {
     const NAME: &'static str = "RevisionDiffHeader";
@@ -844,6 +850,41 @@ impl ::prost::Name for RevisionFileDownloadResponse {
     }
     fn type_url() -> ::prost::alloc::string::String {
         "/lore.thin_client.v1.RevisionFileDownloadResponse".into()
+    }
+}
+/// Controls whether RevisionDiff compares two snapshots directly or computes
+/// their merge-relative changes through a common ancestor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RevisionDiffMode {
+    /// Preserve the server's historical mode selection: pairwise for revisions
+    /// on the same branch (or at a branch point), merge otherwise.
+    Auto = 0,
+    /// Always compare the "from" snapshot directly with the "to" snapshot.
+    Pairwise = 1,
+    /// Always resolve a common ancestor and compute a three-way merge diff.
+    Merge = 2,
+}
+impl RevisionDiffMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Auto => "REVISION_DIFF_MODE_AUTO",
+            Self::Pairwise => "REVISION_DIFF_MODE_PAIRWISE",
+            Self::Merge => "REVISION_DIFF_MODE_MERGE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "REVISION_DIFF_MODE_AUTO" => Some(Self::Auto),
+            "REVISION_DIFF_MODE_PAIRWISE" => Some(Self::Pairwise),
+            "REVISION_DIFF_MODE_MERGE" => Some(Self::Merge),
+            _ => None,
+        }
     }
 }
 /// Generated client implementations.
